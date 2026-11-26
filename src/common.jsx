@@ -55,6 +55,9 @@ export async function api(url, { method = 'GET', body, signal } = {}) {
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (!response.headers.get('content-type')?.includes('application/json')) {
+    throw new Error('API Kelola belum dapat diakses (HTTP ' + response.status + ').');
+  }
   const data = await response.json();
   if (!response.ok) {
     if (response.status === 401 && !['/login', '/demo'].includes(url)) {

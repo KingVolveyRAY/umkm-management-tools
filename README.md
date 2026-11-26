@@ -21,6 +21,10 @@ npm start
 
 `npm start` menyajikan build dan API dari satu alamat. `PORT` dan `DB_PATH` dapat diubah di lingkungan proses atau di berkas `.env` lokal. Gunakan database yang sama untuk mempertahankan data antar-restart. Basis data demo dan operasional harus terpisah.
 
+## Deploy demo di Vercel
+
+Gunakan root repositori, preset Vite, dan Node.js 24. Konfigurasi `vercel.json` menyajikan build dari `dist` dan meneruskan `/api/*` ke satu Vercel Function. Setelah deploy, buka `/api/session` pada domain proyek untuk memeriksa bahwa API mengembalikan JSON. Mode demo bawaan di Vercel menggunakan SQLite di memori dan membuat ulang data contoh saat instance Function berganti.
+
 ## Menyiapkan outlet
 
 1. Salin `.env.example` ke `.env`, set `DEMO_MODE=0`, lalu buat akun pemilik awal dengan `OWNER_USERNAME` dan `OWNER_PASSWORD` minimal 12 karakter. Jalankan aplikasi dengan HTTPS untuk penggunaan di perangkat karyawan, dan atur `COOKIE_SECURE=1` saat HTTPS tersedia. Browser juga mengizinkan kamera dan lokasi pada localhost untuk pengembangan.
