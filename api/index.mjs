@@ -1,18 +1,21 @@
-import { createApp } from '../server/app.mjs';
-import { openStore } from '../server/store.mjs';
+import { createRuntimeApp } from '../server/runtime.mjs';
 
-let app;
+let runtime;
 
-export default function handler(req, res) {
-  if (!app) {
-    if (process.env.DEMO_MODE === '0') {
-      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ error: 'Mode operasional di Vercel memerlukan database persisten.' }));
-      return;
-    }
-    app = createApp(openStore(':memory:', { demo: true }), {
-      demo: true, secureCookie: Boolean(process.env.VERCEL), trustProxy: Boolean(process.env.VERCEL),
-    });
+export default async function handler(req, res) {
+  runtime ??= createRuntimeApp({ serverless: true }).catch(error => {
+    runtime = undefined;
+    throw error;
+  });
+  let app;
+  try {
+    app = await runtime;
+  } catch (error) {
+    console.error('Kelola belum dapat membuka database.', error.code ?? error.name);
+    res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: error.code === 'DATABASE_REQUIRED' ? error.message
+      : 'Basis data belum dapat dibuka. Periksa koneksi dan pengaturan database Kelola.' }));
+    return;
   }
 
   const url = new URL(req.url, 'http://localhost');

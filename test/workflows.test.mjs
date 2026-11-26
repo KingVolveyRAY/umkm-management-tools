@@ -49,10 +49,12 @@ test('cash, static QRIS, and simulated dynamic QRIS update owner reports once ea
   const baseline = (await owner('/owner/overview')).data.current;
 
   const cash = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 60000 };
-  const first = await cashier('/sales', cash);
+  const [first, simultaneous] = await Promise.all([cashier('/sales', cash), cashier('/sales', cash)]);
   assert.equal(first.status, 201);
   assert.equal(first.data.status, 'paid');
   assert.equal(first.data.amount, 56000);
+  assert.equal(simultaneous.status, 201);
+  assert.equal(simultaneous.data.id, first.data.id);
   assert.equal((await cashier('/sales', cash)).data.id, first.data.id);
   assert.equal((await cashier('/sales', { ...cash, cashReceived: 70000 })).status, 409);
   assert.equal((await owner('/sales', cash)).status, 403);

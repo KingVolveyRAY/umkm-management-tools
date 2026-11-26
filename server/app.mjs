@@ -2,7 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import express from 'express';
 import jpeg from 'jpeg-js';
 import QRCode from 'qrcode';
-import { addNotice, hashPassword, localDay, matchesPassword, shiftDay, transaction, venueLocation } from './store.mjs';
+import { hashPassword, localDay, matchesPassword, shiftDay, venueLocation } from './store.mjs';
+import { useDatabase } from './database.mjs';
 import { GatewayError, validStaticQris } from './qris.mjs';
 
 const tokenHash = value => createHash('sha256').update(value).digest('hex');
@@ -40,14 +41,24 @@ function coordinate(value, bound) {
   return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= bound;
 }
 
-export function createApp(db, { demo, gateway = null, secureCookie = false, trustProxy = false } = {}) {
+function recordId(value) {
+  const id = Number(value);
+  if (!/^\d+$/.test(value) || id < 1 || id > 2147483647) fail(404, 'Data tidak ditemukan.');
+  return id;
+}
+
+function addNotice(db, kind, title, detail, timestamp = new Date().toISOString()) {
+  return db.run('INSERT INTO notices (kind,title,detail,created_at) VALUES (?,?,?,?)', [kind, title, detail, timestamp]);
+}
+
+export function createApp(database, { demo, gateway = null, secureCookie = false, trustProxy = false } = {}) {
   const app = express();
+  const db = useDatabase(database);
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
 
-  const statement = sql => db.prepare(sql);
-  const store = () => statement('SELECT * FROM store WHERE id = 1').get();
-  const saleById = id => statement('SELECT * FROM sales WHERE id = ?').get(id);
+  const store = (connection = db) => connection.get('SELECT * FROM store WHERE id = 1');
+  const saleById = (id, connection = db) => connection.get('SELECT * FROM sales WHERE id = ?', [id]);
   const safeUser = ({ id, name, username, role }) => ({ id, name, username, role });
   const checkoutJobs = new Map();
   const loginAttempts = new Map();
@@ -56,32 +67,35 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     path: '/', httpOnly: true, sameSite: 'strict', secure: secureCookie || req.secure, maxAge: age,
   });
 
-  function activeSession(req) {
+  function sessionHash(req) {
     const token = req.headers.cookie?.match(/(?:^|;\s*)kelola_session=([a-f0-9]{64})(?:;|$)/)?.[1];
-    if (!token) return null;
-    req.sessionHash = tokenHash(token);
-    return statement(`
+    return token && tokenHash(token);
+  }
+
+  function activeSession(req) {
+    const hash = sessionHash(req);
+    if (!hash) return null;
+    return db.get(`
       SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1
-    `).get(req.sessionHash, new Date().toISOString());
+    `, [hash, new Date().toISOString()]);
   }
 
-  function startSession(req, res, user) {
-    activeSession(req);
-    if (req.sessionHash) statement('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
+  async function startSession(req, res, user) {
+    const hash = sessionHash(req);
     const token = randomBytes(32).toString('hex');
-    transaction(db, () => {
-      statement('DELETE FROM sessions WHERE expires_at <= ?').run(new Date().toISOString());
-      statement('INSERT INTO sessions VALUES (?,?,?)')
-        .run(tokenHash(token), user.id, new Date(Date.now() + sessionAge).toISOString());
+    await db.transaction(async tx => {
+      if (hash) await tx.run('DELETE FROM sessions WHERE token_hash = ?', [hash]);
+      await tx.run('DELETE FROM sessions WHERE expires_at <= ?', [new Date().toISOString()]);
+      await tx.run('INSERT INTO sessions VALUES (?,?,?)', [tokenHash(token), user.id, new Date(Date.now() + sessionAge).toISOString()]);
     });
     setCookie(req, res, token, sessionAge);
-    res.json(sessionInfo(user));
+    res.json(await sessionInfo(user));
   }
 
-  function sessionInfo(user) {
+  async function sessionInfo(user) {
     if (!user) return { user: null, demo };
-    const settings = store();
+    const settings = await store();
     return {
       user: safeUser(user), demo,
       store: {
@@ -93,8 +107,8 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
   }
 
   function auth(role) {
-    return (req, res, next) => {
-      req.user = activeSession(req);
+    return async (req, res, next) => {
+      req.user = await activeSession(req);
       if (!req.user) return next(new RequestError(401, 'Silakan masuk kembali.'));
       if (role && req.user.role !== role) return next(new RequestError(403, 'Akun ini tidak memiliki akses.'));
       return next();
@@ -116,19 +130,19 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     next();
   }, express.json({ limit: '1550kb' }));
 
-  app.get('/api/session', (req, res) => res.json(sessionInfo(activeSession(req))));
-  app.post('/api/demo', (req, res) => {
+  app.get('/api/session', async (req, res) => res.json(await sessionInfo(await activeSession(req))));
+  app.post('/api/demo', async (req, res) => {
     if (!demo) fail(404, 'Mode demo tidak aktif.');
     const role = req.body?.role;
     if (!['owner', 'employee'].includes(role)) fail(400, 'Panel tidak dikenal.');
-    const user = statement('SELECT * FROM users WHERE id = ? AND role = ? AND active = 1').get(role === 'owner' ? 1 : 2, role);
+    const user = await db.get('SELECT * FROM users WHERE id = ? AND role = ? AND active = 1', [role === 'owner' ? 1 : 2, role]);
     if (!user) fail(404, 'Akun demo tidak aktif.');
-    startSession(req, res, user);
+    return startSession(req, res, user);
   });
 
   // Compare against a real hash even when the username is unknown.
   const dummyHash = hashPassword(randomBytes(24).toString('hex'));
-  app.post('/api/login', (req, res) => {
+  app.post('/api/login', async (req, res) => {
     const username = req.body?.username;
     const password = req.body?.password;
     const now = Date.now();
@@ -141,19 +155,19 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     if (typeof username !== 'string' || !usernameRule.test(username) || typeof password !== 'string' || password.length > 128) {
       fail(400, 'Nama pengguna atau kata sandi belum valid.');
     }
-    const user = statement('SELECT * FROM users WHERE username = ? AND active = 1').get(username);
+    const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND active = 1', [username]);
     if (!matchesPassword(password, user?.password_hash ?? dummyHash) || !user) {
       attempts.count += 1;
       loginAttempts.set(key, attempts);
       fail(401, 'Nama pengguna atau kata sandi salah.');
     }
     loginAttempts.delete(key);
-    startSession(req, res, user);
+    return startSession(req, res, user);
   });
 
-  app.post('/api/logout', (req, res) => {
-    activeSession(req);
-    if (req.sessionHash) statement('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
+  app.post('/api/logout', async (req, res) => {
+    const hash = sessionHash(req);
+    if (hash) await db.run('DELETE FROM sessions WHERE token_hash = ?', [hash]);
     setCookie(req, res, '', 0);
     res.json({ ok: true });
   });
@@ -168,49 +182,49 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     };
   }
 
-  function attendanceRows(day, employee) {
-    return statement(`
+  function attendanceRows(day, employee, connection = db) {
+    return connection.all(`
       SELECT a.id, a.kind, a.timestamp, a.latitude, a.longitude, a.accuracy, a.distance,
-        a.venue_status AS venueStatus, (a.photo IS NOT NULL) AS hasPhoto, u.name, u.id AS employeeId
+        a.venue_status AS "venueStatus", (a.photo IS NOT NULL) AS "hasPhoto", u.name, u.id AS "employeeId"
       FROM attendance a JOIN users u ON u.id = a.employee_id WHERE a.day = ?
       ${employee ? 'AND u.id = ?' : ''} ORDER BY a.timestamp DESC
-    `).all(day, ...(employee ? [employee] : []));
+    `, employee ? [day, employee] : [day]);
   }
 
   const owner = auth('owner');
   const employee = auth('employee');
 
-  app.get('/api/owner/overview', owner, (req, res) => {
+  app.get('/api/owner/overview', owner, async (req, res) => {
     const today = localDay();
     const end = dayParam(req.query.end, today);
     const length = req.query.days === '30' ? 30 : 7;
     const start = shiftDay(end, 1 - length);
-    const summary = day => statement(`
-      SELECT COALESCE(SUM(amount),0) AS revenue, COUNT(*) AS count
-      FROM sales WHERE status = 'paid' AND paid_day = ?
-    `).get(day);
-    const current = summary(end);
-    const previous = summary(shiftDay(end, -1));
-    const grouped = statement(`
-      SELECT paid_day AS day, SUM(amount) AS revenue, COUNT(*) AS count
-      FROM sales WHERE status = 'paid' AND paid_day BETWEEN ? AND ? GROUP BY paid_day
-    `).all(start, end);
+    const [grouped, attendance, staff, recent, notices] = await Promise.all([
+      db.all(`
+        SELECT paid_day AS day, SUM(amount) AS revenue, COUNT(*) AS count
+        FROM sales WHERE status = 'paid' AND paid_day BETWEEN ? AND ? GROUP BY paid_day
+      `, [start, end]),
+      db.get(`
+        SELECT COUNT(CASE WHEN a.kind = 'in' AND u.active = 1 THEN 1 END) AS present,
+          COUNT(CASE WHEN a.venue_status != 'onsite' THEN 1 END) AS review
+        FROM attendance a JOIN users u ON u.id = a.employee_id WHERE a.day = ?
+      `, [end]),
+      db.get("SELECT COUNT(*) AS total FROM users WHERE role = 'employee' AND active = 1"),
+      db.all(saleJoin + "WHERE status = 'paid' AND paid_day = ? ORDER BY paid_at DESC, s.id DESC LIMIT 5", [end]),
+      db.all('SELECT * FROM notices ORDER BY created_at DESC, id DESC LIMIT 4'),
+    ]);
     const series = Array.from({ length }, (_, index) => {
       const day = shiftDay(start, index);
       return grouped.find(entry => entry.day === day) ?? { day, revenue: 0, count: 0 };
     });
-    const present = statement(`
-      SELECT COUNT(*) AS total FROM attendance a JOIN users u ON u.id = a.employee_id
-      WHERE a.day = ? AND a.kind = 'in' AND u.active = 1
-    `).get(end).total;
-    const employees = statement("SELECT COUNT(*) AS total FROM users WHERE role = 'employee' AND active = 1").get().total;
-    const review = statement("SELECT COUNT(*) AS total FROM attendance WHERE day = ? AND venue_status != 'onsite'").get(end).total;
-    const recent = statement(saleJoin + "WHERE status = 'paid' AND paid_day = ? ORDER BY paid_at DESC, s.id DESC LIMIT 5").all(end);
-    const notices = statement('SELECT * FROM notices ORDER BY created_at DESC, id DESC LIMIT 4').all();
-    res.json({ today, end, current, previous, series, present, employees, review, recent: recent.map(publicSale), notices });
+    const summary = ({ revenue, count }) => ({ revenue, count });
+    res.json({
+      today, end, current: summary(series.at(-1)), previous: summary(series.at(-2)), series,
+      present: attendance.present, employees: staff.total, review: attendance.review, recent: recent.map(publicSale), notices,
+    });
   });
 
-  app.get('/api/owner/sales', owner, (req, res) => {
+  app.get('/api/owner/sales', owner, async (req, res) => {
     const from = dayParam(req.query.from, shiftDay(localDay(), -6));
     const to = dayParam(req.query.to, localDay());
     if (from > to || Date.parse(to) - Date.parse(from) > 366 * 86400000) fail(400, 'Pilih rentang hingga 366 hari.');
@@ -219,15 +233,9 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
     const size = 20;
     const args = [from, to];
-    let where = " WHERE COALESCE(paid_day, date(created_at, '+7 hours')) BETWEEN ? AND ?";
+    let where = ` WHERE COALESCE(paid_day, ${db.createdDay}) BETWEEN ? AND ?`;
     if (methods.includes(method)) { where += ' AND method = ?'; args.push(method); }
     if (['pending', 'paid', 'failed'].includes(status)) { where += ' AND status = ?'; args.push(status); }
-    const { total, revenue, paid, pending } = statement(`
-      SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'paid' THEN amount END),0) AS revenue,
-        COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid,
-        COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending
-      FROM sales${where}
-    `).get(...args);
     const order = ' ORDER BY COALESCE(paid_at,created_at) DESC, s.id DESC';
     if (req.query.format === 'csv') {
       const csvCell = value => {
@@ -235,7 +243,11 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
         const safe = /^[=+\-@\t\r]/.test(raw) ? "'" + raw : raw;
         return '"' + safe.replaceAll('"', '""') + '"';
       };
-      const rows = statement(saleJoin + where + order).iterate(...args);
+      const rows = await db.all(`
+        SELECT s.id,u.name AS employee,s.method,s.status,s.amount,s.created_at,s.paid_at
+        FROM sales s JOIN users u ON u.id = s.employee_id
+        ${where}${order}
+      `, args);
       res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="penjualan-kelola.csv"' });
       res.write('\uFEFFTransaksi,Kasir,Metode,Status,Total,Dicatat,Dibayar\r\n');
       for (const row of rows) {
@@ -243,39 +255,52 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
       }
       return res.end();
     }
-    const rows = statement(saleJoin + where + order + ' LIMIT ? OFFSET ?').all(...args, size, (page - 1) * size);
+    const [{ total, revenue, paid, pending }, rows] = await Promise.all([
+      db.get(`
+        SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'paid' THEN amount END),0) AS revenue,
+          COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid,
+          COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending
+        FROM sales${where}
+      `, args),
+      db.all(saleJoin + where + order + ' LIMIT ? OFFSET ?', [...args, size, (page - 1) * size]),
+    ]);
     res.json({ rows: rows.map(publicSale), total, revenue, paid, pending, page, size });
   });
 
-  app.get('/api/owner/notices', owner, (req, res) => {
-    const rows = statement('SELECT * FROM notices ORDER BY created_at DESC, id DESC LIMIT 50').all();
-    const { count } = statement('SELECT COUNT(*) AS count FROM notices WHERE is_read = 0').get();
+  app.get('/api/owner/notices', owner, async (req, res) => {
+    const [rows, { count }] = await Promise.all([
+      db.all('SELECT * FROM notices ORDER BY created_at DESC, id DESC LIMIT 50'),
+      db.get('SELECT COUNT(*) AS count FROM notices WHERE is_read = 0'),
+    ]);
     res.json({ rows, count });
   });
 
-  app.post('/api/owner/notices/read', owner, (req, res) => {
-    statement('UPDATE notices SET is_read = 1 WHERE is_read = 0').run();
+  app.post('/api/owner/notices/read', owner, async (req, res) => {
+    await db.run('UPDATE notices SET is_read = 1 WHERE is_read = 0');
     res.json({ ok: true });
   });
 
-  app.get('/api/owner/attendance', owner, (req, res) => {
+  app.get('/api/owner/attendance', owner, async (req, res) => {
     const day = dayParam(req.query.day, localDay());
-    const roster = statement("SELECT id,name,active FROM users WHERE role = 'employee' ORDER BY name").all();
-    res.json({ day, roster, rows: attendanceRows(day) });
+    const [roster, rows] = await Promise.all([
+      db.all("SELECT id,name,active FROM users WHERE role = 'employee' ORDER BY name"),
+      attendanceRows(day),
+    ]);
+    res.json({ day, roster, rows });
   });
 
-  app.get('/api/attendance/:id/photo', auth(), (req, res) => {
-    const row = statement('SELECT photo,employee_id FROM attendance WHERE id = ?').get(req.params.id);
+  app.get('/api/attendance/:id/photo', auth(), async (req, res) => {
+    const row = await db.get('SELECT photo,employee_id FROM attendance WHERE id = ?', [recordId(req.params.id)]);
     if (!row?.photo || (req.user.role === 'employee' && req.user.id !== row.employee_id)) fail(404, 'Selfie tidak tersedia.');
     res.type('jpeg').send(Buffer.from(row.photo));
   });
 
-  app.get('/api/attendance', employee, (req, res) => {
+  app.get('/api/attendance', employee, async (req, res) => {
     const day = localDay();
-    res.json({ day, rows: attendanceRows(day, req.user.id) });
+    res.json({ day, rows: await attendanceRows(day, req.user.id) });
   });
 
-  app.post('/api/attendance', employee, (req, res) => {
+  app.post('/api/attendance', employee, async (req, res) => {
     const { latitude, longitude, accuracy, selfie, kind } = req.body ?? {};
     if (!coordinate(latitude, 90) || !coordinate(longitude, 180) || !coordinate(accuracy, 100000) || accuracy <= 0) {
       fail(400, 'Lokasi GPS belum valid.');
@@ -293,29 +318,31 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     } catch {
       fail(400, 'Selfie tidak terbaca. Ambil ulang dengan kamera.');
     }
-    const settings = store();
+    const settings = await store();
     if (settings.latitude == null || settings.longitude == null) fail(409, 'Pemilik perlu mengatur lokasi outlet terlebih dahulu.');
     const location = venueLocation(settings, latitude, longitude, accuracy);
     const now = new Date();
     const timestamp = now.toISOString();
     const day = localDay(now);
-    transaction(db, () => {
-      const current = attendanceRows(day, req.user.id);
-      if (current.some(record => record.kind === kind)) fail(409, 'Absensi ini sudah tercatat hari ini.');
-      if (kind === 'out' && !current.some(record => record.kind === 'in')) fail(409, 'Absen masuk terlebih dahulu.');
-      statement(`
+    await db.transaction(async tx => {
+      if (kind === 'out' && !(await attendanceRows(day, req.user.id, tx)).some(record => record.kind === 'in')) {
+        fail(409, 'Absen masuk terlebih dahulu.');
+      }
+      const created = await tx.run(`
         INSERT INTO attendance (employee_id,kind,day,timestamp,latitude,longitude,accuracy,distance,venue_status,photo)
         VALUES (?,?,?,?,?,?,?,?,?,?)
-      `).run(req.user.id, kind, day, timestamp, latitude, longitude, accuracy, location.distance, location.venue_status, image);
-      addNotice(db, 'attendance', req.user.name + (kind === 'in' ? ' absen masuk' : ' absen pulang'),
+        ON CONFLICT (employee_id,day,kind) DO NOTHING
+      `, [req.user.id, kind, day, timestamp, latitude, longitude, accuracy, location.distance, location.venue_status, image]);
+      if (!created) fail(409, 'Absensi ini sudah tercatat hari ini.');
+      await addNotice(tx, 'attendance', req.user.name + (kind === 'in' ? ' absen masuk' : ' absen pulang'),
         seatStatuses[location.venue_status] + ' • ' + location.distance + ' m dari outlet', timestamp);
     });
-    res.status(201).json({ day, rows: attendanceRows(day, req.user.id) });
+    res.status(201).json({ day, rows: await attendanceRows(day, req.user.id) });
   });
 
-  app.get('/api/products', auth(), (req, res) => {
+  app.get('/api/products', auth(), async (req, res) => {
     const where = req.user.role === 'owner' ? '' : ' WHERE active = 1';
-    res.json({ rows: statement('SELECT * FROM products' + where + ' ORDER BY id').all() });
+    res.json({ rows: await db.all('SELECT * FROM products' + where + ' ORDER BY id') });
   });
 
   function productFields(body) {
@@ -326,20 +353,20 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     return [name, category, price, body.active === false ? 0 : 1];
   }
 
-  app.post('/api/owner/products', owner, (req, res) => {
-    const { lastInsertRowid } = statement('INSERT INTO products (name,category,price,active) VALUES (?,?,?,?)').run(...productFields(req.body));
-    res.status(201).json({ id: lastInsertRowid });
+  app.post('/api/owner/products', owner, async (req, res) => {
+    const { id } = await db.get('INSERT INTO products (name,category,price,active) VALUES (?,?,?,?) RETURNING id', productFields(req.body));
+    res.status(201).json({ id });
   });
 
-  app.put('/api/owner/products/:id', owner, (req, res) => {
-    const updated = statement('UPDATE products SET name=?, category=?, price=?, active=? WHERE id=?')
-      .run(...productFields(req.body), req.params.id);
-    if (!updated.changes) fail(404, 'Produk tidak ditemukan.');
+  app.put('/api/owner/products/:id', owner, async (req, res) => {
+    const changes = await db.run('UPDATE products SET name=?, category=?, price=?, active=? WHERE id=?',
+      [...productFields(req.body), recordId(req.params.id)]);
+    if (!changes) fail(404, 'Produk tidak ditemukan.');
     res.json({ ok: true });
   });
 
-  app.get('/api/owner/employees', owner, (req, res) =>
-    res.json({ rows: statement("SELECT id,name,username,active FROM users WHERE role = 'employee' ORDER BY name").all() }));
+  app.get('/api/owner/employees', owner, async (req, res) =>
+    res.json({ rows: await db.all("SELECT id,name,username,active FROM users WHERE role = 'employee' ORDER BY name") }));
 
   function staffFields(body, passwordRequired) {
     const name = requiredText(body?.name, 70, 'Nama karyawan');
@@ -352,36 +379,45 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     return { name, username, password, active: body.active === false ? 0 : 1 };
   }
 
-  app.post('/api/owner/employees', owner, (req, res) => {
+  app.post('/api/owner/employees', owner, async (req, res) => {
     const { name, username, password, active } = staffFields(req.body, true);
-    if (statement('SELECT id FROM users WHERE username = ?').get(username)) fail(409, 'Nama pengguna sudah digunakan.');
-    const { lastInsertRowid } = statement("INSERT INTO users (name,username,password_hash,role,active) VALUES (?,?,?,'employee',?)")
-      .run(name, username, hashPassword(password), active);
-    res.status(201).json({ id: lastInsertRowid });
+    const user = await db.get(`
+      INSERT INTO users (name,username,password_hash,role,active) VALUES (?,?,?,'employee',?)
+      ON CONFLICT DO NOTHING RETURNING id
+    `, [name, username, hashPassword(password), active]);
+    if (!user) fail(409, 'Nama pengguna sudah digunakan.');
+    res.status(201).json({ id: user.id });
   });
 
-  app.put('/api/owner/employees/:id', owner, (req, res) => {
-    const user = statement("SELECT * FROM users WHERE id = ? AND role = 'employee'").get(req.params.id);
-    if (!user) fail(404, 'Karyawan tidak ditemukan.');
+  app.put('/api/owner/employees/:id', owner, async (req, res) => {
+    const id = recordId(req.params.id);
     const { name, username, password, active } = staffFields(req.body, false);
-    if (statement('SELECT id FROM users WHERE username = ? AND id != ?').get(username, user.id)) fail(409, 'Nama pengguna sudah digunakan.');
-    transaction(db, () => {
-      statement('UPDATE users SET name=?,username=?,password_hash=?,active=? WHERE id=?')
-        .run(name, username, password ? hashPassword(password) : user.password_hash, active, user.id);
-      if (!active || password) statement('DELETE FROM sessions WHERE user_id = ?').run(user.id);
-    });
+    const nextHash = password ? hashPassword(password) : null;
+    try {
+      await db.transaction(async tx => {
+        const changed = await tx.run(`
+          UPDATE users SET name=?,username=?,password_hash=COALESCE(?,password_hash),active=?
+          WHERE id=? AND role='employee'
+        `, [name, username, nextHash, active, id]);
+        if (!changed) fail(404, 'Karyawan tidak ditemukan.');
+        if (!active || password) await tx.run('DELETE FROM sessions WHERE user_id = ?', [id]);
+      });
+    } catch (error) {
+      if (error.code === '23505' || error.errcode === 2067) fail(409, 'Nama pengguna sudah digunakan.');
+      throw error;
+    }
     res.json({ ok: true });
   });
 
-  app.get('/api/owner/settings', owner, (req, res) => {
-    const settings = store();
+  app.get('/api/owner/settings', owner, async (req, res) => {
+    const settings = await store();
     res.json({
       name: settings.name, outlet: settings.outlet, latitude: settings.latitude, longitude: settings.longitude,
       radius: settings.radius, staticQris: settings.static_qris ?? '', dynamic: demo ? 'demo' : gateway?.production ? 'live' : gateway ? 'sandbox' : 'off',
     });
   });
 
-  app.put('/api/owner/settings', owner, (req, res) => {
+  app.put('/api/owner/settings', owner, async (req, res) => {
     const { latitude, longitude, radius, staticQris } = req.body ?? {};
     const name = requiredText(req.body?.name, 70, 'Nama usaha');
     const outlet = requiredText(req.body?.outlet, 70, 'Nama outlet');
@@ -390,23 +426,23 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     }
     if (!Number.isSafeInteger(radius) || radius < 25 || radius > 5000) fail(400, 'Radius harus antara 25 dan 5.000 meter.');
     if (staticQris && !validStaticQris(staticQris)) fail(400, 'Kode QRIS statis tidak valid. Gunakan QRIS merchant resmi dalam rupiah.');
-    statement('UPDATE store SET name=?,outlet=?,latitude=?,longitude=?,radius=?,static_qris=? WHERE id=1')
-      .run(name, outlet, latitude ?? null, longitude ?? null, radius, staticQris || null);
-    res.json(sessionInfo(req.user));
+    await db.run('UPDATE store SET name=?,outlet=?,latitude=?,longitude=?,radius=?,static_qris=? WHERE id=1',
+      [name, outlet, latitude ?? null, longitude ?? null, radius, staticQris || null]);
+    res.json(await sessionInfo(req.user));
   });
 
-  function settle(sale, providerStatus, date = new Date()) {
+  async function settle(tx, sale, providerStatus, date = new Date()) {
     const timestamp = date.toISOString();
-    const updated = statement(`
+    const updated = await tx.run(`
       UPDATE sales SET status='paid', provider_status=?, paid_at=?, paid_day=?
       WHERE id=? AND status='pending'
-    `).run(providerStatus, timestamp, localDay(date), sale.id);
-    if (updated.changes) {
+    `, [providerStatus, timestamp, localDay(date), sale.id]);
+    if (updated) {
       const title = sale.method === 'cash' ? 'Penjualan tunai tercatat'
         : sale.provider === 'merchant' ? 'QRIS statis dikonfirmasi kasir'
         : sale.provider === 'demo' ? 'Pembayaran QRIS demo tercatat' : 'Pembayaran QRIS diterima';
-      const cashier = statement('SELECT name FROM users WHERE id = ?').get(sale.employee_id);
-      addNotice(db, 'sale', title, cashier.name + ' • ' + rupiah(sale.amount));
+      const cashier = await tx.get('SELECT name FROM users WHERE id = ?', [sale.employee_id]);
+      await addNotice(tx, 'sale', title, cashier.name + ' • ' + rupiah(sale.amount));
     }
   }
 
@@ -415,19 +451,19 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
       || data.payment_type !== 'qris' || (data.currency && data.currency !== 'IDR')) return;
     const status = data.transaction_status;
     const qr = gateway.qr(data);
-    transaction(db, () => {
-      statement(`
+    return db.transaction(async tx => {
+      await tx.run(`
         UPDATE sales SET provider_status=?, qr_value=COALESCE(?,qr_value), qr_url=COALESCE(?,qr_url)
         WHERE id=? AND status='pending'
-      `).run(status || null, qr.value, qr.url, sale.id);
+      `, [status || null, qr.value, qr.url, sale.id]);
       if (status === 'settlement' || (status === 'capture' && data.fraud_status === 'accept')) {
         const serverTime = /^[0-9-]{10} [0-9:]{8}$/.test(data.settlement_time ?? '')
           ? Date.parse(data.settlement_time.replace(' ', 'T') + '+07:00') : NaN;
         const paidTime = serverTime >= Date.parse(sale.created_at) - 60000 && serverTime <= Date.now() + 60000
           ? new Date(serverTime) : new Date();
-        settle(sale, status, paidTime);
+        await settle(tx, sale, status, paidTime);
       } else if (['deny', 'cancel', 'expire', 'failure'].includes(status)) {
-        statement("UPDATE sales SET status = 'failed' WHERE id = ? AND status = 'pending'").run(sale.id);
+        await tx.run("UPDATE sales SET status = 'failed' WHERE id = ? AND status = 'pending'", [sale.id]);
       }
     });
   }
@@ -437,12 +473,12 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
       const job = (async () => {
         try {
           const data = await gateway.charge(sale.id, sale.amount);
-          updateFromGateway(sale, data);
+          await updateFromGateway(sale, data);
         } catch (error) {
           if (!(error instanceof GatewayError)) throw error;
-          updateFromGateway(sale, await gateway.status(sale.id));
+          await updateFromGateway(sale, await gateway.status(sale.id));
         }
-        const saved = saleById(sale.id);
+        const saved = await saleById(sale.id);
         if (saved.status === 'pending' && !saved.qr_value && !saved.qr_url) throw new GatewayError();
       })().finally(() => checkoutJobs.delete(sale.id));
       checkoutJobs.set(sale.id, job);
@@ -454,15 +490,15 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     if (!Array.isArray(value) || value.length < 1 || value.length > 30) fail(400, 'Keranjang belum valid.');
     const ids = new Set();
     return value.map(item => {
-      if (!Number.isSafeInteger(item?.id) || !Number.isSafeInteger(item.quantity)
+      if (!Number.isSafeInteger(item?.id) || item.id < 1 || item.id > 2147483647 || !Number.isSafeInteger(item.quantity)
           || item.quantity < 1 || item.quantity > 99 || ids.has(item.id)) fail(400, 'Jumlah atau produk belum valid.');
       ids.add(item.id);
       return { id: item.id, quantity: item.quantity };
     }).sort((a, b) => a.id - b.id);
   }
 
-  app.get('/api/sales', employee, (req, res) => {
-    const rows = statement(saleJoin + 'WHERE s.employee_id = ? ORDER BY created_at DESC LIMIT 20').all(req.user.id);
+  app.get('/api/sales', employee, async (req, res) => {
+    const rows = await db.all(saleJoin + 'WHERE s.employee_id = ? ORDER BY created_at DESC LIMIT 20', [req.user.id]);
     res.json({ rows: rows.map(publicSale) });
   });
 
@@ -472,19 +508,24 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
       fail(400, 'Pilih metode pembayaran yang valid.');
     }
     const order = checkoutItems(req.body.items);
-    const sale = transaction(db, () => {
-      const saved = statement('SELECT * FROM sales WHERE employee_id = ? AND request_id = ?').get(req.user.id, requestId);
-      if (saved) {
-        const items = JSON.parse(saved.items).map(({ id, quantity }) => ({ id, quantity }));
-        if (saved.method !== method || JSON.stringify(order) !== JSON.stringify(items)
-          || (method === 'cash' && saved.cash_received !== cashReceived)) fail(409, 'Percobaan pembayaran ini sudah dipakai.');
-        return saved;
-      }
-      const settings = store();
+    function repeatCheckout(saved) {
+      const items = JSON.parse(saved.items).map(({ id, quantity }) => ({ id, quantity }));
+      if (saved.method !== method || JSON.stringify(order) !== JSON.stringify(items)
+        || (method === 'cash' && saved.cash_received !== cashReceived)) fail(409, 'Percobaan pembayaran ini sudah dipakai.');
+      return saved;
+    }
+    const sale = await db.transaction(async tx => {
+      const previous = () => tx.get('SELECT * FROM sales WHERE employee_id = ? AND request_id = ?', [req.user.id, requestId]);
+      const saved = await previous();
+      if (saved) return repeatCheckout(saved);
+
+      const settings = await store(tx);
       if (method === 'qris_static' && !demo && !settings.static_qris) fail(409, 'QRIS statis belum diatur oleh pemilik.');
       if (method === 'qris_dynamic' && !demo && !gateway) fail(409, 'Payment gateway QRIS dinamis belum diatur.');
+      const ids = order.map(({ id }) => id);
+      const products = await tx.all(`SELECT id,name,price FROM products WHERE active=1 AND id IN (${ids.map(() => '?').join(',')})`, ids);
       const items = order.map(({ id, quantity }) => {
-        const product = statement('SELECT id,name,price FROM products WHERE id=? AND active=1').get(id);
+        const product = products.find(row => row.id === id);
         if (!product) fail(409, 'Salah satu produk sudah tidak tersedia. Muat ulang katalog.');
         return { ...product, quantity };
       });
@@ -500,61 +541,63 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
       const qr = method === 'qris_static' && settings.static_qris ? settings.static_qris
         : method !== 'cash' && provider === 'demo' ? 'KELOLA DEMO • ' + id : null;
       const timestamp = new Date().toISOString();
-      statement(`
+      const created = await tx.get(`
         INSERT INTO sales (id,request_id,employee_id,method,status,provider,items,amount,cash_received,qr_value,created_at)
         VALUES (?,?,?,?,'pending',?,?,?,?,?,?)
-      `).run(id, requestId, req.user.id, method, provider, JSON.stringify(items), amount,
-        method === 'cash' ? cashReceived : null, qr, timestamp);
-      const result = saleById(id);
-      if (method === 'cash') settle(result, 'cash_received');
-      return saleById(id);
+        ON CONFLICT (employee_id,request_id) DO NOTHING RETURNING *
+      `, [id, requestId, req.user.id, method, provider, JSON.stringify(items), amount,
+        method === 'cash' ? cashReceived : null, qr, timestamp]);
+      if (!created) return repeatCheckout(await previous());
+      if (method !== 'cash') return created;
+      await settle(tx, created, 'cash_received');
+      return saleById(id, tx);
     });
     if (sale.provider === 'midtrans' && sale.status === 'pending' && !sale.qr_value && !sale.qr_url) {
       try {
         await charge(sale);
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
-        return res.status(202).json({ ...publicSale(saleById(sale.id)), paymentCheckUnavailable: true });
+        return res.status(202).json({ ...publicSale(await saleById(sale.id)), paymentCheckUnavailable: true });
       }
     }
-    res.status(201).json(publicSale(saleById(sale.id)));
+    res.status(201).json(publicSale(await saleById(sale.id)));
   });
 
-  function employeeSale(req) {
-    const sale = saleById(req.params.id);
+  async function employeeSale(req) {
+    const sale = await saleById(req.params.id);
     if (!sale || sale.employee_id !== req.user.id) fail(404, 'Transaksi tidak ditemukan.');
     return sale;
   }
 
   app.get('/api/sales/:id', employee, async (req, res) => {
-    const sale = employeeSale(req);
+    const sale = await employeeSale(req);
     if (sale.provider === 'midtrans' && sale.status === 'pending' && gateway) {
       try {
-        updateFromGateway(sale, await gateway.status(sale.id));
+        await updateFromGateway(sale, await gateway.status(sale.id));
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
         return res.json({ ...publicSale(sale), paymentCheckUnavailable: true });
       }
     }
-    res.json(publicSale(saleById(sale.id)));
+    res.json(publicSale(await saleById(sale.id)));
   });
 
   app.post('/api/sales/:id/retry', employee, async (req, res) => {
-    const sale = employeeSale(req);
+    const sale = await employeeSale(req);
     if (sale.provider !== 'midtrans' || !gateway) fail(409, 'Percobaan ulang tidak tersedia untuk transaksi ini.');
     if (sale.status === 'pending' && !sale.qr_value && !sale.qr_url) {
       try {
         await charge(sale);
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
-        return res.status(202).json({ ...publicSale(saleById(sale.id)), paymentCheckUnavailable: true });
+        return res.status(202).json({ ...publicSale(await saleById(sale.id)), paymentCheckUnavailable: true });
       }
     }
-    res.json(publicSale(saleById(sale.id)));
+    res.json(publicSale(await saleById(sale.id)));
   });
 
   app.get('/api/sales/:id/qr', employee, async (req, res) => {
-    const sale = employeeSale(req);
+    const sale = await employeeSale(req);
     if (sale.status !== 'pending') fail(404, 'QR tidak tersedia.');
     if (sale.qr_value) {
       const png = await QRCode.toBuffer(sale.qr_value, { width: 300, margin: 3, errorCorrectionLevel: 'M' });
@@ -568,20 +611,20 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
     fail(404, 'QR belum tersedia.');
   });
 
-  app.post('/api/sales/:id/confirm', employee, (req, res) => {
-    const sale = employeeSale(req);
+  app.post('/api/sales/:id/confirm', employee, async (req, res) => {
+    const sale = await employeeSale(req);
     if (sale.method === 'cash' || sale.provider === 'midtrans' || (sale.provider === 'demo' && !demo)) {
       fail(403, 'Status transaksi ini ditetapkan oleh metode pembayaran.');
     }
     if (sale.status === 'failed') fail(409, 'Transaksi sudah berakhir.');
-    transaction(db, () => settle(sale, sale.provider === 'demo' ? 'demo_settlement' : 'merchant_confirmed'));
-    res.json(publicSale(saleById(sale.id)));
+    await db.transaction(tx => settle(tx, sale, sale.provider === 'demo' ? 'demo_settlement' : 'merchant_confirmed'));
+    res.json(publicSale(await saleById(sale.id)));
   });
 
   app.post('/api/payments/midtrans/notification', async (req, res) => {
     if (!gateway) fail(404, 'Payment gateway belum diatur.');
     if (!gateway.verifies(req.body ?? {})) fail(401, 'Tanda tangan notifikasi tidak valid.');
-    const sale = saleById(req.body.order_id);
+    const sale = await saleById(req.body.order_id);
     if (sale?.provider === 'midtrans' && sale.method === 'qris_dynamic' && sale.status === 'pending') {
       let data;
       try {
@@ -591,7 +634,7 @@ export function createApp(db, { demo, gateway = null, secureCookie = false, trus
         fail(503, 'Status gateway belum dapat diverifikasi.');
       }
       if (!data) fail(503, 'Status gateway belum dapat diverifikasi.');
-      updateFromGateway(sale, data);
+      await updateFromGateway(sale, data);
     }
     res.json({ ok: true });
   });

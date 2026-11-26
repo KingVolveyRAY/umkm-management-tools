@@ -1,22 +1,11 @@
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import express from 'express';
-import { createApp } from './app.mjs';
-import { midtransGateway } from './qris.mjs';
-import { openStore } from './store.mjs';
+import { createRuntimeApp } from './runtime.mjs';
 
 const dev = process.argv.includes('--dev');
 const demo = process.env.DEMO_MODE !== '0';
-const path = resolve(process.env.DB_PATH || (demo ? 'data/demo.sqlite' : 'data/kelola.sqlite'));
-const db = openStore(path, {
-  demo, ownerUsername: process.env.OWNER_USERNAME, ownerPassword: process.env.OWNER_PASSWORD,
-});
-const app = createApp(db, {
-  demo,
-  gateway: demo ? null : midtransGateway(process.env.MIDTRANS_SERVER_KEY, process.env.MIDTRANS_PRODUCTION === '1'),
-  secureCookie: process.env.COOKIE_SECURE === '1',
-  trustProxy: process.env.TRUST_PROXY === '1',
-});
+const app = await createRuntimeApp();
 const server = createServer(app);
 
 app.use((req, res, next) => {

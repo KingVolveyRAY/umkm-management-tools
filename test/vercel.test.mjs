@@ -5,6 +5,15 @@ import test from 'node:test';
 import handler from '../api/index.mjs';
 
 test('the Vercel Function serves the Express API and preserves query parameters', async t => {
+  const original = { DATABASE_URL: process.env.DATABASE_URL, DEMO_MODE: process.env.DEMO_MODE };
+  delete process.env.DATABASE_URL;
+  process.env.DEMO_MODE = '1';
+  t.after(() => {
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
   const server = createServer(handler).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
