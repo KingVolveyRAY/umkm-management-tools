@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { Moon } from 'lucide-react';
+import { Palette } from 'lucide-react';
 
 const preferenceKey = 'kelola:theme';
 const systemColorScheme = '(prefers-color-scheme: dark)';
@@ -7,9 +7,9 @@ const systemColorScheme = '(prefers-color-scheme: dark)';
 function readPreference() {
   try {
     const stored = localStorage.getItem(preferenceKey);
-    if (stored === 'light' || stored === 'dark') return stored;
+    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
   } catch {}
-  return 'system';
+  return 'light';
 }
 
 export function useThemePreference() {
@@ -47,10 +47,10 @@ export function useThemePreference() {
 
 export function ThemeControl({ preference, changeTheme }) {
   return <label className="theme-control">
-    <span><Moon size={15} aria-hidden="true" />Tema tampilan</span>
+    <span><Palette size={15} aria-hidden="true" />Tema tampilan</span>
     <select value={preference} onChange={event => changeTheme(event.target.value)}>
+      <option value="light">Krem</option>
       <option value="system">Sistem</option>
-      <option value="light">Terang</option>
       <option value="dark">Gelap</option>
     </select>
   </label>;

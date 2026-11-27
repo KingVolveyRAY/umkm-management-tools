@@ -1,7 +1,7 @@
 .profile-menu { width: 232px; }
 .theme-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; font-weight: 670; }
 .theme-control > span { display: flex; align-items: center; gap: 7px; }
-.theme-control select { min-height: 37px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: #f8fbfc; color: var(--ink); }
+.theme-control select { min-height: 37px; padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--raised); color: var(--ink); }
 .profile-menu .theme-control { padding: 5px 8px 9px; border-bottom: 1px solid var(--line); margin-bottom: 5px; }
 .login-theme { display: flex; justify-content: flex-end; margin-bottom: 20px; }
 
@@ -144,12 +144,10 @@
   [data-theme="dark"] .face-check { background: #22352c; box-shadow: var(--clay-shadow); }
   [data-theme="dark"] .face-steps li[aria-current] { border-color: #73618c; }
   [data-theme="dark"] .product-plus { background: #121b18c9; }
-  [data-theme="dark"] .qr-box img { background: #fff; }
   [data-theme="dark"] .attendance-capture-dialog .dialog-actions { background: var(--raised); }
 
   [data-theme="dark"] .target-progress { background: var(--sunken); }
   [data-theme="dark"] .target-progress::-webkit-progress-bar { background: var(--sunken); }
-  [data-theme="dark"] .chart-legend i { background: var(--chart-line); }
   [data-theme="dark"] .chart-point { background: var(--surface); border-color: var(--chart-line); box-shadow: 0 0 0 1px var(--surface); }
   [data-theme="dark"] .chart-tooltip { background: var(--sunken); border: 1px solid var(--control-border); color: var(--ink); }
   [data-theme="dark"] .chart-tooltip small { color: var(--muted); }
