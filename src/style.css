@@ -263,6 +263,10 @@ tbody tr:hover td { background: #fafcf9; }
 .toast { position: fixed; z-index: 100; display: flex; gap: 8px; align-items: center; right: 20px; bottom: 20px; max-width: calc(100% - 40px); padding: 11px 14px; border: 1px solid #deecda; border-radius: 9px; color: #315b3b; background: #f4fbf1; box-shadow: 0 8px 20px #27462b18; font-size: 12.5px; font-weight: 680; }
 .toast-error { border-color: #f3ddd8; background: #fff4f1; color: #954b3e; }
 
+.pos-attendance { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 10px 12px; margin-bottom: var(--space); }
+.pos-attendance-status { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding-inline: 3px; color: var(--deep); font-size: 12.5px; font-weight: 650; }
+.pos-attendance .attendance-buttons { margin: 0; }
+.pos-attendance .attendance-buttons .button { min-height: 44px; }
 .pos-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 330px); gap: var(--space); align-items: start; }
 .pos-catalog { min-width: 0; }
 .search-field { display: flex; gap: 9px; align-items: center; padding: 0 13px; min-height: 43px; background: #fff; border: 1px solid #e1e8de; color: #71816e; border-radius: 10px; }
@@ -418,6 +422,8 @@ tbody tr:hover td { background: #fafcf9; }
   .chart-y, .chart-x { font-size: 9px; }
   .chart-x > span:nth-child(even) { visibility: hidden; }
   .metric-grid-three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pos-attendance { display: grid; }
+  .pos-attendance .attendance-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-grid, .pos-layout { grid-template-columns: minmax(0, 1fr); }
   .cart-panel { position: static; }
   .cart-jump { display: inline-flex; }

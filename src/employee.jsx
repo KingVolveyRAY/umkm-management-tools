@@ -7,7 +7,7 @@ import {
 import {
   api, Badge, Button, Card, dateLabel, Dialog, Empty, ErrorText, IconTile, locationStates, methodLabels,
   money, Pending, PriceBreakdown, Receipt, ResourceState, saleStates, SectionHeading, TimeChip,
-  timeLabel, today, useResource, WordTitle,
+  timeLabel, useResource, WordTitle,
 } from './common.jsx';
 import { livenessLabels } from './liveness.js';
 import { useFaceVerification } from './use-face-verification.js';
@@ -19,6 +19,7 @@ const productIcon = category => /makanan|roti|snack/i.test(category) ? [Croissan
 export function PointOfSale({ session, notify }) {
   const { data, error, reload } = useResource('/products', 18000);
   const history = useResource('/sales');
+  const attendance = useTodayAttendance();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [cart, setCart] = useState({});
@@ -45,6 +46,15 @@ export function PointOfSale({ session, notify }) {
       <Button icon={History} onClick={() => { history.reload(); setShowHistory(true); }}>Riwayat kasir</Button>
       {!!count && <Button className="cart-jump" icon={ShoppingBag} onClick={() => cartRef.current?.focus()}>Keranjang ({count})</Button>}
     </SectionHeading>
+    <Card className="pos-attendance" aria-label="Absensi cepat">
+      <div className="pos-attendance-status">
+        <Clock3 size={16} aria-hidden="true" />
+        <p role="status">{attendanceStatus(session.store.venueConfigured, attendance)}</p>
+        {session.store.venueConfigured && !attendance.ready && attendance.error &&
+          <button type="button" className="text-button" onClick={attendance.reload}>Coba lagi</button>}
+      </div>
+      <AttendanceActions attendance={attendance} session={session} notify={notify} />
+    </Card>
     <div className="pos-layout">
       <section className="pos-catalog">
         <div className="search-field">
@@ -270,18 +280,57 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
   </Dialog>;
 }
 
-export function EmployeeAttendance({ session, notify }) {
+function useTodayAttendance() {
   const { data, error, reload } = useResource('/attendance', 12000);
-  const [dialog, setDialog] = useState(null);
-  const [updated, setUpdated] = useState(null);
+  const [submitted, setSubmitted] = useState(null);
+  const hasNewerSubmission = submitted && (!data || submitted.day > data.day ||
+    (submitted.day === data.day && submitted.rows.length > data.rows.length));
+  const snapshot = hasNewerSubmission ? submitted : data;
+  const records = snapshot?.rows ?? [];
+  return {
+    records, error, reload, ready: Boolean(snapshot),
+    arrival: records.find(row => row.kind === 'in'),
+    departure: records.find(row => row.kind === 'out'),
+    saveResult(result) {
+      setSubmitted(result);
+      reload();
+    },
+  };
+}
+
+function attendanceStatus(venueConfigured, { ready, error, arrival, departure }) {
+  if (!venueConfigured) return 'Lokasi outlet belum diatur.';
+  if (!ready) return error ? 'Status absensi belum tersedia.' : 'Memuat status absensi…';
+  if (departure) return 'Sudah absen masuk dan pulang';
+  return arrival ? 'Sudah absen masuk' : 'Belum absen masuk hari ini';
+}
+
+function AttendanceActions({ attendance, session, notify }) {
+  const [kind, setKind] = useState(null);
+  const { ready, arrival, departure, saveResult } = attendance;
+  const unavailable = !ready || !session.store.venueConfigured;
+  return <>
+    <div className="attendance-buttons">
+      <Button icon={LogIn} kind="primary" disabled={unavailable || !!arrival} onClick={() => setKind('in')}>Absen masuk</Button>
+      <Button icon={LogOut} kind={arrival && !departure ? 'primary' : 'secondary'}
+        disabled={unavailable || !arrival || !!departure} onClick={() => setKind('out')}>Absen pulang</Button>
+    </div>
+    {kind && <CaptureAttendance kind={kind} session={session} close={() => setKind(null)} complete={result => {
+      saveResult(result);
+      setKind(null);
+      notify('Absensi berhasil dicatat.');
+    }} />}
+  </>;
+}
+
+export function EmployeeAttendance({ session, notify }) {
+  const attendance = useTodayAttendance();
+  const { ready, records, error, reload } = attendance;
   const [now, setNow] = useState(() => new Date().toISOString());
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date().toISOString()), 1000);
     return () => clearInterval(interval);
   }, []);
-  const records = updated?.day === today() && updated.rows.length > (data?.rows.length || 0) ? updated.rows : data?.rows ?? [];
-  const arrival = records.find(row => row.kind === 'in');
-  const departure = records.find(row => row.kind === 'out');
   return <>
     <SectionHeading title="Absensi saya" description="Catat waktu masuk dan pulang di lokasi kerja Anda." />
     <div className="attendance-layout">
@@ -289,15 +338,12 @@ export function EmployeeAttendance({ session, notify }) {
         <header className="panel-header"><div><WordTitle>Absensi hari ini</WordTitle><p>{dateLabel(now, 'long')}</p></div><IconTile icon={Clock3} /></header>
         <div className="clock-display"><strong>{timeLabel(now)}</strong><span>WIB</span></div>
         <div className="clock-location"><MapPin size={16} />{session.store.name} · {session.store.outlet}</div>
-        <div className="attendance-buttons">
-          <Button icon={LogIn} kind="primary" disabled={!data || !!arrival || !session.store.venueConfigured} onClick={() => setDialog('in')}>Absen masuk</Button>
-          <Button icon={LogOut} disabled={!data || !arrival || !!departure || !session.store.venueConfigured} onClick={() => setDialog('out')}>Absen pulang</Button>
-        </div>
+        <AttendanceActions attendance={attendance} session={session} notify={notify} />
         {!session.store.venueConfigured && <p className="field-note">Minta pemilik mengatur lokasi outlet sebelum absen.</p>}
       </Card>
       <Card className="panel attendance-history" index={1}>
         <header className="panel-header"><div><WordTitle>Catatan hari ini</WordTitle><p>Riwayat masuk dan pulang dari akun Anda</p></div></header>
-        {!data && !updated ? <ResourceState error={error} reload={reload} /> : !records.length
+        {!ready ? <ResourceState error={error} reload={reload} /> : !records.length
           ? <Empty icon={Clock3} title="Belum ada absensi">Mulai dengan absen masuk saat tiba di outlet.</Empty>
           : <div className="attendance-records">{records.map(record => {
             const [label, color] = locationStates[record.venueStatus];
@@ -309,12 +355,6 @@ export function EmployeeAttendance({ session, notify }) {
           })}</div>}
       </Card>
     </div>
-    {dialog && <CaptureAttendance kind={dialog} session={session} close={() => setDialog(null)} complete={result => {
-      setUpdated(result);
-      setDialog(null);
-      reload();
-      notify('Absensi berhasil dicatat.');
-    }} />}
   </>;
 }
 
