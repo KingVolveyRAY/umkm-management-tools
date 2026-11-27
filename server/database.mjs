@@ -1,5 +1,5 @@
 import { Pool, types } from '@neondatabase/serverless';
-import { databaseSchema, initialRows, migrateFirstOutlet, outletIndexes, outletMigrationColumns, verifyMode } from './store.mjs';
+import { commerceMigration, databaseSchema, initialRows, migrateFirstOutlet, outletIndexes, outletMigrationColumns, verifyMode } from './store.mjs';
 
 function sqliteConnection(raw) {
   return {
@@ -111,6 +111,9 @@ export async function openPostgres(connectionString, options) {
         }
         await tx.run(outletIndexes);
         await tx.run('INSERT INTO schema_migrations VALUES (1)');
+      }
+      if (!await tx.get('SELECT version FROM schema_migrations WHERE version = 2')) {
+        await tx.run(commerceMigration(true));
       }
     });
     return db;

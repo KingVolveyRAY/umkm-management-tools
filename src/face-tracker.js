@@ -1,8 +1,10 @@
 import { FaceLandmarker } from '@mediapipe/tasks-vision';
 import wasmLoaderPath from '@mediapipe/tasks-vision/vision_wasm_internal.js?url';
 import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?url';
+import { drawCameraFrame } from './camera-frame.js';
 
 export async function createFaceTracker() {
+  const preview = document.createElement('canvas');
   const model = await FaceLandmarker.createFromOptions({ wasmLoaderPath, wasmBinaryPath }, {
     baseOptions: { modelAssetPath: '/vision/face_landmarker.task', delegate: 'CPU' },
     runningMode: 'VIDEO',
@@ -14,8 +16,9 @@ export async function createFaceTracker() {
 
   return {
     close: () => model.close(),
-    sample(video, timestamp) {
-      const result = model.detectForVideo(video, timestamp);
+    sample(video, timestamp, ratio) {
+      if (ratio) drawCameraFrame(preview, video, ratio, 480);
+      const result = model.detectForVideo(ratio ? preview : video, timestamp);
       if (result.faceLandmarks.length !== 1) {
         return { cue: result.faceLandmarks.length > 1 ? 'multiple' : 'missing' };
       }

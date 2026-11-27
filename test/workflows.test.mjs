@@ -12,8 +12,8 @@ import { createApp } from '../server/app.mjs';
 import { midtransGateway, validStaticQris } from '../server/qris.mjs';
 import { databaseSchema, initialRows, localDay, openStore } from '../server/store.mjs';
 
-async function serve(t, { demo = true, gateway, db = openStore(':memory:', { demo }) } = {}) {
-  const server = createApp(db, { demo, gateway }).listen(0, '127.0.0.1');
+async function serve(t, { demo = true, gateway, addressLookup, db = openStore(':memory:', { demo }) } = {}) {
+  const server = createApp(db, { demo, gateway, addressLookup }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
@@ -38,6 +38,7 @@ async function serve(t, { demo = true, gateway, db = openStore(':memory:', { dem
 }
 
 const basket = [{ id: 1, quantity: 2 }];
+const customer = { name: 'Pelanggan Uji' };
 const staticPayload = '00020101021126160012ID.TEST.QRIS5204581253033605802ID5910KOPI SUDUT6007JAKARTA630444B6';
 
 async function challengeProof(staff, kind) {
@@ -56,7 +57,7 @@ test('cash, static QRIS, and simulated dynamic QRIS update owner reports once ea
   assert.equal((await cashier('/owner/overview')).status, 403);
   const baseline = (await owner('/owner/overview')).data.current;
 
-  const cash = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 60000 };
+  const cash = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 60000, customer };
   const [first, simultaneous] = await Promise.all([cashier('/sales', cash), cashier('/sales', cash)]);
   assert.equal(first.status, 201);
   assert.equal(first.data.status, 'paid');
@@ -73,7 +74,7 @@ test('cash, static QRIS, and simulated dynamic QRIS update owner reports once ea
   assert.equal((await owner('/owner/settings', { ...settings, staticQris: 'invalid' }, 'PUT')).status, 400);
   assert.equal((await owner('/owner/settings', { ...settings, staticQris: staticPayload }, 'PUT')).status, 200);
   for (const [method, provider] of [['qris_static', 'merchant'], ['qris_dynamic', 'demo']]) {
-    const result = await cashier('/sales', { method, requestId: randomUUID(), items: basket });
+    const result = await cashier('/sales', { method, requestId: randomUUID(), items: basket, customer });
     const order = result.data;
     assert.equal(result.status, 201);
     assert.equal(order.status, 'pending');
@@ -143,7 +144,7 @@ test('operational payment uses the gateway for settlement and verifies signed no
   assert.equal((await owner('/owner/employees', { name: 'Kasir Satu', username: 'kasir1', password: 'example-only-staff-password' })).status, 201);
   assert.equal((await owner('/owner/products', { name: 'Kopi', category: 'Minuman', price: 12000 })).status, 201);
   assert.equal((await cashier('/login', { username: 'kasir1', password: 'example-only-staff-password' })).status, 200);
-  const order = (await cashier('/sales', { method: 'qris_dynamic', requestId: randomUUID(), items: basket })).data;
+  const order = (await cashier('/sales', { method: 'qris_dynamic', requestId: randomUUID(), items: basket, customer })).data;
   assert.equal(order.status, 'pending');
   assert.equal(order.qr, true);
   assert.equal(amount, 24000);
@@ -233,7 +234,7 @@ test('owners can manage another outlet and export scoped sales, and staff stay i
   assert.equal(catalog.data.rows.length, 1);
   assert.equal(catalog.data.rows[0].id, productId);
   assert.equal('costTotal' in catalog.data.rows[0], false);
-  const checkout = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 55000 };
+  const checkout = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 55000, customer };
   assert.equal((await staff('/sales', checkout)).status, 409);
   const sale = await staff('/sales', { ...checkout, items: [{ id: productId, quantity: 2 }] });
   assert.equal(sale.data.status, 'paid');
@@ -264,6 +265,105 @@ test('owners can manage another outlet and export scoped sales, and staff stay i
   assert.equal(sheet.getCell('A6').value, sale.data.id);
   assert.equal(sheet.getCell('E6').value, 50000);
   assert.equal(sheet.rowCount, 6);
+});
+
+test('POS applies the best scheduled promotion, stores customer contacts, and snapshots HPP for profit', async t => {
+  const client = await serve(t);
+  const owner = client();
+  const staff = client();
+  await owner('/demo', { role: 'owner' });
+  await staff('/demo', { role: 'employee' });
+  const product = (await owner('/products')).data.rows[0];
+  const one = [{ id: product.id, quantity: 1 }];
+  assert.equal((await owner('/owner/products/' + product.id, {
+    ...product, costComponents: [{ name: 'Bahan', amount: 30000 }],
+  }, 'PUT')).status, 200);
+  const wib = offset => new Date(Date.now() + (7 + offset) * 3600000).toISOString().slice(0, 16);
+  const schedule = { startsAt: wib(-1), endsAt: wib(1) };
+  await owner('/owner/promotions', { ...schedule, name: 'Hemat lima ribu', type: 'fixed', value: 5000 });
+  await owner('/owner/promotions', { ...schedule, name: 'Diskon 25%', type: 'percent', value: 25 });
+  await owner('/owner/promotions', { startsAt: wib(2), endsAt: wib(3), name: 'Promo besok', type: 'percent', value: 100 });
+  await owner('/owner/promotions', { startsAt: wib(-3), endsAt: wib(-2), name: 'Promo lama', type: 'percent', value: 100 });
+  assert.equal((await staff('/owner/promotions')).status, 403);
+  assert.equal((await staff('/owner/customers')).status, 403);
+
+  const initial = (await staff('/sales/quote', { items: one })).data;
+  assert.equal(initial.subtotal, 28000);
+  assert.equal(initial.discount, 7000);
+  assert.equal(initial.amount, 21000);
+  assert.equal(initial.promo.name, 'Diskon 25%');
+  assert.equal('hpp' in initial, false);
+  const request = { method: 'cash', requestId: randomUUID(), items: one, quote: initial.quote, cashReceived: 25000 };
+  assert.equal((await staff('/sales', request)).status, 400);
+  assert.equal((await staff('/sales', { ...request, customer: { name: 'Dina', phone: '123' } })).status, 400);
+  const first = await staff('/sales', { ...request, customer: { name: 'Dina', phone: '0812-3456-7890' } });
+  assert.equal(first.status, 201);
+  assert.equal(first.data.subtotal, 28000);
+  assert.equal(first.data.discount, 7000);
+  assert.equal(first.data.customerName, 'Dina');
+  assert.equal(first.data.promo.name, 'Diskon 25%');
+  assert.equal('phone' in first.data, false);
+  const retried = await staff('/sales', { ...request, customer: { name: 'Dina', phone: '+62 812 3456 7890' } });
+  assert.equal(retried.data.id, first.data.id);
+
+  await owner('/owner/products/' + product.id, { ...product, costComponents: [{ name: 'Bahan baru', amount: 18000 }] }, 'PUT');
+  await owner('/owner/promotions', { ...schedule, name: 'Gratis', type: 'fixed', value: 50000 });
+  const stale = await staff('/sales', { ...request, requestId: randomUUID(), customer });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.data.code, 'QUOTE_CHANGED');
+  const zero = (await staff('/sales/quote', { items: one })).data;
+  assert.equal(zero.amount, 0);
+  assert.equal(zero.discount, 28000);
+  const freeRequest = { ...request, requestId: randomUUID(), quote: zero.quote, cashReceived: 0, customer: { name: 'Tamu tanpa nomor' } };
+  assert.equal((await staff('/sales', { ...freeRequest, method: 'qris_dynamic' })).status, 400);
+  const freeSale = await staff('/sales', freeRequest);
+  assert.equal(freeSale.status, 201);
+  assert.equal(freeSale.data.status, 'paid');
+  assert.equal(freeSale.data.amount, 0);
+  assert.equal((await staff('/sales', freeRequest)).data.id, freeSale.data.id);
+
+  const clients = (await owner('/owner/customers')).data;
+  assert.equal(clients.total, 2);
+  assert.equal(clients.rows.find(row => row.name === 'Tamu tanpa nomor').phone, null);
+  const [dina] = (await owner('/owner/customers?q=0812345')).data.rows;
+  assert.equal(dina.phone, '+6281234567890');
+  assert.equal(dina.visits, 1);
+  assert.equal(dina.spent, 21000);
+  const report = (await owner('/owner/profit')).data.total;
+  assert.equal(report.covered, 2);
+  assert.equal(report.discount, 35000);
+  assert.equal(report.coveredRevenue, 21000);
+  assert.equal(report.hpp, 48000);
+  assert.equal(report.gross, -27000);
+  assert.ok(report.missing > 0);
+
+  assert.equal((await staff('/sales', { ...freeRequest, requestId: randomUUID() })).status, 201);
+  const names = (await owner('/owner/customers?q=Tamu')).data.rows;
+  assert.equal(names.length, 2);
+  assert.ok(names.every(row => row.phone === null && row.visits === 1));
+});
+
+test('owner can look up an address, save the pin label, and change the pin using existing coordinates', async t => {
+  const match = { latitude: -6.1754, longitude: 106.8272, label: 'Monumen Nasional, Jakarta' };
+  const client = await serve(t, { addressLookup: async (text, outlet) => {
+    assert.equal(text, 'Monas Jakarta');
+    assert.equal(outlet.id, 1);
+    return [match];
+  } });
+  const owner = client();
+  const cashier = client();
+  await owner('/demo', { role: 'owner' });
+  await cashier('/demo', { role: 'employee' });
+  assert.equal((await cashier('/owner/address-search?q=Monas%20Jakarta')).status, 403);
+  assert.deepEqual((await owner('/owner/address-search?q=Monas%20Jakarta')).data.rows, [match]);
+  const settings = (await owner('/owner/settings')).data;
+  assert.equal((await owner('/owner/settings', { ...settings, ...match, address: match.label }, 'PUT')).status, 200);
+  const saved = (await owner('/owner/settings')).data;
+  assert.equal(saved.address, match.label);
+  assert.equal(saved.latitude, match.latitude);
+  const { address, ...prior } = saved;
+  assert.equal((await owner('/owner/settings', { ...prior, latitude: -6.26 }, 'PUT')).status, 200);
+  assert.equal((await owner('/owner/settings')).data.address, '');
 });
 
 test('the operational database retains users and rejects opening under demo mode', async () => {

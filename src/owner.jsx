@@ -2,7 +2,7 @@ import { lazy, Suspense, useId, useState } from 'react';
 import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Bell, CalendarDays,
   Camera, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Coffee, Crosshair, ImagePlus,
-  MapPin, Package, Pencil, Plus, QrCode, ReceiptText, Store, Target, Trash2, UserRoundCheck, Users, Wallet,
+  MapPin, Package, Pencil, Plus, QrCode, ReceiptText, Search, Store, Target, Trash2, UserRoundCheck, Users, Wallet,
 } from 'lucide-react';
 import {
   Avatar, Badge, Button, Card, change, DateControl, dateLabel, Dialog, Empty, ErrorText,
@@ -396,12 +396,15 @@ export function CatalogPage({ employees = false, notify }) {
         ? <Empty icon={employees ? Users : Package} title={'Belum ada ' + noun}>Tambahkan {noun} untuk mulai menggunakan kasir.</Empty>
         : <div className="table-overflow"><table>
           <thead><tr><th>Nama</th><th>{employees ? 'Nama pengguna' : 'Kategori'}</th>
-            {!employees && <><th>Harga</th><th>HPP per produk</th></>}<th>Status</th><th className="align-right">Aksi</th></tr></thead>
+            {!employees && <><th>Harga</th><th>HPP per produk</th><th>Laba/rugi per unit</th></>}<th>Status</th><th className="align-right">Aksi</th></tr></thead>
           <tbody>{data.rows.map((row, index) => <tr key={row.id}>
             <td><div className="person-cell">{employees ? <Avatar name={row.name} color={['green', 'blue', 'amber', 'purple'][index % 4]} /> : <IconTile icon={Coffee} color="amber" />}<strong>{row.name}</strong></div></td>
             <td>{employees ? row.username : row.category}</td>
             {!employees && <><td className="amount-cell">{money(row.price)}</td>
-              <td className="amount-cell">{row.costComponents.length ? money(row.costTotal) : '—'}</td></>}
+              <td className="amount-cell">{row.costComponents.length ? money(row.costTotal) : '—'}</td>
+              <td className={'amount-cell' + (row.costTotal > row.price ? ' negative-value' : '')}>
+                {row.costComponents.length ? money(row.price - row.costTotal) : '—'}
+              </td></>}
             <td><Badge color={row.active ? 'green' : 'neutral'}>{row.active ? 'Aktif' : 'Nonaktif'}</Badge></td>
             <td className="align-right"><Button icon={Pencil} onClick={() => openForm(row)} aria-label={'Edit ' + row.name}>Edit</Button></td>
           </tr>)}</tbody>
@@ -486,11 +489,28 @@ function SettingsForm({ defaults, updateSession, notify }) {
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
+  const [addressQuery, setAddressQuery] = useState(() => (defaults.address ?? '').slice(0, 170));
+  const [matches, setMatches] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const edit = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
-  const setPin = (latitude, longitude) => setForm(prev => ({ ...prev,
-    latitude: Number(latitude.toFixed(6)), longitude: Number(longitude.toFixed(6)),
-  }));
+  function setPin(latitude, longitude, address = '') {
+    setForm(prev => ({ ...prev, latitude: Number(latitude.toFixed(6)), longitude: Number(longitude.toFixed(6)), address }));
+    setMatches(null);
+  }
   const labels = { demo: 'Mode demo', sandbox: 'Midtrans sandbox', live: 'Midtrans aktif', off: 'Belum terhubung' };
+  async function findAddress() {
+    const query = addressQuery.trim();
+    if (searching || query.length < 3) return;
+    setSearchError('');
+    setMatches(null);
+    setSearching(true);
+    try {
+      const result = await api('/owner/address-search?' + new URLSearchParams({ q: query }));
+      setMatches(result.rows);
+    } catch (problem) { setSearchError(problem.message); }
+    finally { setSearching(false); }
+  }
   async function readQr(event) {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -553,9 +573,28 @@ function SettingsForm({ defaults, updateSession, notify }) {
     <Card className="panel settings-card" index={1}>
       <header className="panel-header"><div><WordTitle>Area absensi</WordTitle><p>Lokasi ini menjadi titik acuan jarak GPS.</p></div><IconTile icon={MapPin} color="blue" /></header>
       <div className="form">
+        <div className="address-search">
+          <label>Cari berdasarkan alamat<input value={addressQuery} maxLength={170} disabled={searching}
+            placeholder="Nama jalan, gedung, atau kota" onChange={event => {
+              setAddressQuery(event.target.value); setMatches(null); setSearchError('');
+            }} onKeyDown={event => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); findAddress(); }
+            }} /></label>
+          <Button icon={Search} disabled={searching || addressQuery.trim().length < 3} onClick={findAddress}>{searching ? 'Mencari…' : 'Cari alamat'}</Button>
+        </div>
+        <ErrorText text={searchError} />
+        {matches?.length === 0 && <p className="field-note">Alamat belum ditemukan. Tambahkan nama kecamatan atau kota.</p>}
+        {!!matches?.length && <ul className="address-results" aria-label="Hasil pencarian alamat">
+          {matches.map(match => <li key={match.latitude + ':' + match.longitude}>
+            <button type="button" onClick={() => { setPin(match.latitude, match.longitude, match.label); setAddressQuery(match.label.slice(0, 170)); }}>
+              <MapPin size={16} />{match.label}
+            </button>
+          </li>)}
+        </ul>}
         <Suspense fallback={<Pending label="Memuat peta…" />}>
           <OutletMap latitude={form.latitude} longitude={form.longitude} radius={Number(form.radius)} onSelect={setPin} />
         </Suspense>
+        {form.address && <p className="field-note address-label">{form.address}</p>}
         <label>Radius (meter)<input required type="number" min={25} max={5000} value={form.radius} onChange={event => edit('radius', event.target.value)} /></label>
         <div className="pin-actions">
           <Button icon={Crosshair} onClick={locate} disabled={locating}>{locating ? 'Membaca GPS…' : 'Gunakan lokasi saya'}</Button>

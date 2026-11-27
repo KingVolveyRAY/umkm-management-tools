@@ -4,9 +4,11 @@ import { createLiveness } from './liveness.js';
 
 const empty = { actions: [], count: 0, cue: 'idle', error: '' };
 
-export function useFaceVerification(video, kind) {
+export function useFaceVerification(video, kind, aspectRatio) {
   const current = useRef({ attempt: 0, frame: 0, tracker: null, proof: null });
+  const ratio = useRef(aspectRatio);
   const [state, setState] = useState(empty);
+  useEffect(() => { ratio.current = aspectRatio; }, [aspectRatio]);
 
   useEffect(() => {
     const work = current.current;
@@ -60,7 +62,7 @@ export function useFaceVerification(video, kind) {
           lastVideoTime = live.currentTime;
           lastFrameTime = time;
           try {
-            const result = tracker.sample(work.tracker.sample(live, time), time);
+            const result = tracker.sample(work.tracker.sample(live, time, ratio.current), time);
             work.proof = result.cue === 'complete' ? { id: challenge.id, steps: result.completed, expiresAt } : null;
             const key = result.cue + ':' + result.completed.length;
             if (key !== lastStatus) {

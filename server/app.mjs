@@ -5,6 +5,10 @@ import QRCode from 'qrcode';
 import { hashPassword, localDay, matchesPassword, monthRange, shiftDay, venueLocation } from './store.mjs';
 import { useDatabase } from './database.mjs';
 import { GatewayError, validStaticQris } from './qris.mjs';
+import { searchAddress } from './address-search.mjs';
+import { registerBusinessRoutes } from './business-routes.mjs';
+import { checkoutItems, customerFields, priceOrder, rememberCustomer } from './commerce.mjs';
+import { RequestError, coordinate, dayParam, fail, recordId, reportRange, requiredText } from './request.mjs';
 
 const tokenHash = value => createHash('sha256').update(value).digest('hex');
 const rupiah = value => 'Rp' + value.toLocaleString('id-ID');
@@ -14,44 +18,10 @@ const sessionAge = 12 * 60 * 60 * 1000;
 const seatStatuses = { onsite: 'Di area outlet', uncertain: 'Lokasi perlu ditinjau', outside: 'Di luar area outlet' };
 const challengeAge = 3 * 60 * 1000;
 
-class RequestError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function fail(status, message) {
-  throw new RequestError(status, message);
-}
-
-function requiredText(value, limit, label) {
-  if (typeof value !== 'string' || !value.trim() || value.trim().length > limit) fail(400, label + ' belum valid.');
-  return value.trim();
-}
-
-function dayParam(value, fallback) {
-  if (value == null) return fallback;
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) fail(400, 'Tanggal belum valid.');
-  const date = new Date(value + 'T12:00:00+07:00');
-  if (Number.isNaN(date.getTime()) || localDay(date) !== value) fail(400, 'Tanggal belum valid.');
-  return value;
-}
-
 function monthParam(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}$/.test(value)) fail(400, 'Bulan belum valid.');
   dayParam(value + '-01');
   return value;
-}
-
-function coordinate(value, bound) {
-  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= bound;
-}
-
-function recordId(value) {
-  const id = Number(value);
-  if (!/^\d+$/.test(value) || id < 1 || id > 2147483647) fail(404, 'Data tidak ditemukan.');
-  return id;
 }
 
 function addNotice(db, outletId, kind, title, detail, timestamp = new Date().toISOString()) {
@@ -76,18 +46,21 @@ function matchesChallenge(proof, challenge, now) {
   return true;
 }
 
-export function createApp(database, { demo, gateway = null, secureCookie = false, trustProxy = false } = {}) {
+export function createApp(database, { demo, gateway = null, secureCookie = false, trustProxy = false, addressLookup = searchAddress } = {}) {
   const app = express();
   const db = useDatabase(database);
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
 
   const store = (id, connection = db) => connection.get('SELECT * FROM outlets WHERE id = ?', [id]);
-  const saleById = (id, connection = db) => connection.get('SELECT * FROM sales WHERE id = ?', [id]);
+  const saleJoin = `
+    SELECT s.*,u.name AS employee,o.name AS store_name,o.outlet AS outlet_name
+    FROM sales s JOIN users u ON u.id = s.employee_id JOIN outlets o ON o.id = s.outlet_id
+  `;
+  const saleById = (id, connection = db) => connection.get(saleJoin + 'WHERE s.id = ?', [id]);
   const safeUser = ({ id, name, username, role }) => ({ id, name, username, role });
   const checkoutJobs = new Map();
   const loginAttempts = new Map();
-  const saleJoin = 'SELECT s.*, u.name AS employee FROM sales s JOIN users u ON u.id = s.employee_id ';
   const setCookie = (req, res, value, age) => res.cookie('kelola_session', value, {
     path: '/', httpOnly: true, sameSite: 'strict', secure: secureCookie || req.secure, maxAge: age,
   });
@@ -207,6 +180,9 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
     return {
       id: sale.id, method: sale.method, status: sale.status, provider: sale.provider,
       items: JSON.parse(sale.items), amount: sale.amount, cashReceived: sale.cash_received,
+      subtotal: sale.subtotal ?? sale.amount, discount: sale.discount_amount,
+      promo: sale.promotion_id == null ? null : { id: sale.promotion_id, name: sale.promotion_name },
+      customerName: sale.customer_name, storeName: sale.store_name, outletName: sale.outlet_name,
       employee: sale.employee, createdAt: sale.created_at, paidAt: sale.paid_at,
       qr: sale.status === 'pending' && !!(sale.qr_url || sale.qr_value),
       providerStatus: sale.provider_status,
@@ -225,6 +201,7 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
 
   const owner = auth('owner');
   const employee = auth('employee');
+  registerBusinessRoutes(app, db, owner);
 
   app.post('/api/owner/outlets', owner, async (req, res) => {
     const name = requiredText(req.body?.name, 70, 'Nama usaha');
@@ -319,9 +296,7 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   });
 
   app.get('/api/owner/sales', owner, async (req, res) => {
-    const from = dayParam(req.query.from, shiftDay(localDay(), -6));
-    const to = dayParam(req.query.to, localDay());
-    if (from > to || Date.parse(to) - Date.parse(from) > 366 * 86400000) fail(400, 'Pilih rentang hingga 366 hari.');
+    const { from, to } = reportRange(req.query);
     const method = req.query.method;
     const status = req.query.status;
     const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
@@ -546,13 +521,19 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   app.get('/api/owner/settings', owner, async (req, res) => {
     const settings = req.outlet;
     res.json({
-      name: settings.name, outlet: settings.outlet, latitude: settings.latitude, longitude: settings.longitude,
+      name: settings.name, outlet: settings.outlet, latitude: settings.latitude, longitude: settings.longitude, address: settings.address,
       radius: settings.radius, staticQris: settings.static_qris ?? '', dynamic: demo ? 'demo' : gateway?.production ? 'live' : gateway ? 'sandbox' : 'off',
     });
   });
 
+  app.get('/api/owner/address-search', owner, async (req, res) => {
+    const query = requiredText(req.query.q, 170, 'Alamat');
+    if (query.length < 3) fail(400, 'Masukkan alamat minimal tiga karakter.');
+    res.json({ rows: await addressLookup(query, req.outlet) });
+  });
+
   app.put('/api/owner/settings', owner, async (req, res) => {
-    const { latitude, longitude, radius, staticQris } = req.body ?? {};
+    const { latitude, longitude, radius, staticQris, address } = req.body ?? {};
     const name = requiredText(req.body?.name, 70, 'Nama usaha');
     const outlet = requiredText(req.body?.outlet, 70, 'Nama outlet');
     if ((latitude != null || longitude != null) && (!coordinate(latitude, 90) || !coordinate(longitude, 180))) {
@@ -560,8 +541,12 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
     }
     if (!Number.isSafeInteger(radius) || radius < 25 || radius > 5000) fail(400, 'Radius harus antara 25 dan 5.000 meter.');
     if (staticQris && !validStaticQris(staticQris)) fail(400, 'Kode QRIS statis tidak valid. Gunakan QRIS merchant resmi dalam rupiah.');
-    await db.run('UPDATE outlets SET name=?,outlet=?,latitude=?,longitude=?,radius=?,static_qris=? WHERE id=?',
-      [name, outlet, latitude ?? null, longitude ?? null, radius, staticQris || null, req.outlet.id]);
+    if (address !== undefined && (typeof address !== 'string' || address.trim().length > 320)) fail(400, 'Alamat outlet belum valid.');
+    const savedAddress = latitude == null ? '' : address === undefined
+      ? latitude === req.outlet.latitude && longitude === req.outlet.longitude ? req.outlet.address : ''
+      : address.trim();
+    await db.run('UPDATE outlets SET name=?,outlet=?,latitude=?,longitude=?,radius=?,static_qris=?,address=? WHERE id=?',
+      [name, outlet, latitude ?? null, longitude ?? null, radius, staticQris || null, savedAddress, req.outlet.id]);
     res.json(await sessionInfo(req.user, req.outlet.id));
   });
 
@@ -572,7 +557,8 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
       WHERE id=? AND status='pending'
     `, [providerStatus, timestamp, localDay(date), sale.id]);
     if (updated) {
-      const title = sale.method === 'cash' ? 'Penjualan tunai tercatat'
+      const title = sale.amount === 0 ? 'Transaksi promo gratis tercatat'
+        : sale.method === 'cash' ? 'Penjualan tunai tercatat'
         : sale.provider === 'merchant' ? 'QRIS statis dikonfirmasi kasir'
         : sale.provider === 'demo' ? 'Pembayaran QRIS demo tercatat' : 'Pembayaran QRIS diterima';
       const cashier = await tx.get('SELECT name FROM users WHERE id = ?', [sale.employee_id]);
@@ -620,16 +606,15 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
     await checkoutJobs.get(sale.id);
   }
 
-  function checkoutItems(value) {
-    if (!Array.isArray(value) || value.length < 1 || value.length > 30) fail(400, 'Keranjang belum valid.');
-    const ids = new Set();
-    return value.map(item => {
-      if (!Number.isSafeInteger(item?.id) || item.id < 1 || item.id > 2147483647 || !Number.isSafeInteger(item.quantity)
-          || item.quantity < 1 || item.quantity > 99 || ids.has(item.id)) fail(400, 'Jumlah atau produk belum valid.');
-      ids.add(item.id);
-      return { id: item.id, quantity: item.quantity };
-    }).sort((a, b) => a.id - b.id);
+  function quoteView({ items, subtotal, discount, promo, amount }) {
+    const price = { items, subtotal, discount, promo, amount };
+    return { ...price, quote: tokenHash(JSON.stringify(price)) };
   }
+
+  app.post('/api/sales/quote', employee, async (req, res) => {
+    const items = checkoutItems(req.body?.items);
+    res.json(quoteView(await priceOrder(db, req.outlet.id, items, new Date().toISOString())));
+  });
 
   app.get('/api/sales', employee, async (req, res) => {
     const rows = await db.all(saleJoin + 'WHERE s.employee_id = ? AND s.outlet_id = ? ORDER BY created_at DESC LIMIT 20',
@@ -638,35 +623,35 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   });
 
   app.post('/api/sales', employee, async (req, res) => {
-    const { method, requestId, cashReceived } = req.body ?? {};
+    const { method, requestId, cashReceived, quote } = req.body ?? {};
     if (!methods.includes(method) || typeof requestId !== 'string' || !/^[a-z0-9-]{16,64}$/i.test(requestId)) {
       fail(400, 'Pilih metode pembayaran yang valid.');
     }
     const order = checkoutItems(req.body.items);
-    function repeatCheckout(saved) {
+    const customer = customerFields(req.body.customer);
+    async function repeatCheckout(tx, saved) {
       const items = JSON.parse(saved.items).map(({ id, quantity }) => ({ id, quantity }));
+      const contact = await tx.get('SELECT phone FROM customers WHERE id = ? AND outlet_id = ?', [saved.customer_id, req.outlet.id]);
       if (saved.outlet_id !== req.outlet.id || saved.method !== method || JSON.stringify(order) !== JSON.stringify(items)
+        || saved.customer_name !== customer.name || contact?.phone !== customer.phone
         || (method === 'cash' && saved.cash_received !== cashReceived)) fail(409, 'Percobaan pembayaran ini sudah dipakai.');
       return saved;
     }
     const sale = await db.transaction(async tx => {
       const previous = () => tx.get('SELECT * FROM sales WHERE employee_id = ? AND request_id = ?', [req.user.id, requestId]);
       const saved = await previous();
-      if (saved) return repeatCheckout(saved);
+      if (saved) return repeatCheckout(tx, saved);
 
+      const timestamp = new Date().toISOString();
+      const price = await priceOrder(tx, req.outlet.id, order, timestamp);
+      const { items, amount, subtotal, discount, promo, hpp } = price;
+      if (quote !== undefined && quote !== quoteView(price).quote) {
+        fail(409, 'Harga atau promo berubah. Periksa kembali total pembayaran.', 'QUOTE_CHANGED');
+      }
+      if (!amount && method !== 'cash') fail(400, 'Catat transaksi gratis tanpa QRIS.');
       const settings = await store(req.outlet.id, tx);
       if (method === 'qris_static' && !demo && !settings.static_qris) fail(409, 'QRIS statis belum diatur oleh pemilik.');
       if (method === 'qris_dynamic' && !demo && !gateway) fail(409, 'Payment gateway QRIS dinamis belum diatur.');
-      const ids = order.map(({ id }) => id);
-      const products = await tx.all(`SELECT id,name,price FROM products WHERE outlet_id = ? AND active=1 AND id IN (${ids.map(() => '?').join(',')})`,
-        [req.outlet.id, ...ids]);
-      const items = order.map(({ id, quantity }) => {
-        const product = products.find(row => row.id === id);
-        if (!product) fail(409, 'Salah satu produk sudah tidak tersedia. Muat ulang katalog.');
-        return { ...product, quantity };
-      });
-      const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-      if (amount > 100000000) fail(400, 'Total transaksi melebihi Rp100.000.000.');
       if (method === 'cash' && (!Number.isSafeInteger(cashReceived) || cashReceived < amount || cashReceived > 1000000000)) {
         fail(400, 'Uang diterima harus mencukupi total transaksi.');
       }
@@ -676,16 +661,21 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
         : gateway ? 'midtrans' : 'demo';
       const qr = method === 'qris_static' && settings.static_qris ? settings.static_qris
         : method !== 'cash' && provider === 'demo' ? 'KELOLA DEMO • ' + id : null;
-      const timestamp = new Date().toISOString();
+      const contact = await rememberCustomer(tx, req.outlet.id, customer, timestamp, id);
       const created = await tx.get(`
-        INSERT INTO sales (id,request_id,employee_id,outlet_id,method,status,provider,items,amount,cash_received,qr_value,created_at)
-        VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?)
+        INSERT INTO sales (id,request_id,employee_id,outlet_id,method,status,provider,items,amount,cash_received,qr_value,created_at,
+          subtotal,discount_amount,promotion_id,promotion_name,customer_id,customer_name,hpp_total)
+        VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT (employee_id,request_id) DO NOTHING RETURNING *
       `, [id, requestId, req.user.id, req.outlet.id, method, provider, JSON.stringify(items), amount,
-        method === 'cash' ? cashReceived : null, qr, timestamp]);
-      if (!created) return repeatCheckout(await previous());
+        method === 'cash' ? cashReceived : null, qr, timestamp,
+        subtotal, discount, promo?.id ?? null, promo?.name ?? null, contact.id, customer.name, hpp]);
+      if (!created) {
+        if (!customer.phone) await tx.run('DELETE FROM customers WHERE id = ?', [contact.id]);
+        return repeatCheckout(tx, await previous());
+      }
       if (method !== 'cash') return created;
-      await settle(tx, created, 'cash_received');
+      await settle(tx, created, amount ? 'cash_received' : 'promo_full');
       return saleById(id, tx);
     });
     if (sale.provider === 'midtrans' && sale.status === 'pending' && !sale.qr_value && !sale.qr_url) {
@@ -778,7 +768,7 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   app.use('/api', (req, res) => res.status(404).json({ error: 'Halaman API tidak ditemukan.' }));
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
-    if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
+    if (error instanceof RequestError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error.type === 'entity.too.large') return res.status(413).json({ error: 'Ukuran selfie terlalu besar.' });
     if (error.type === 'entity.parse.failed') return res.status(400).json({ error: 'Permintaan JSON tidak valid.' });
     console.error(error);

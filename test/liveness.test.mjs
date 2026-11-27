@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLiveness } from '../src/liveness.js';
+import { frameCrop } from '../src/camera-frame.js';
+
+test('mobile and desktop frames are cropped from landscape and portrait cameras without stretching', () => {
+  assert.deepEqual(frameCrop(640, 480, 3 / 4), { x: 140, y: 0, width: 360, height: 480 });
+  assert.deepEqual(frameCrop(480, 640, 3 / 4), { x: 0, y: 0, width: 480, height: 640 });
+  assert.deepEqual(frameCrop(960, 720, 16 / 9), { x: 0, y: 90, width: 960, height: 540 });
+});
 
 const neutral = { scores: { eyeLeft: 0, eyeRight: 0, smileLeft: 0, smileRight: 0 } };
 const frame = (eyeLeft, eyeRight, smileLeft = 0, smileRight = 0) => ({ scores: { eyeLeft, eyeRight, smileLeft, smileRight } });

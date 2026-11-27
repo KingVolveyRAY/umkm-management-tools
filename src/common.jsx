@@ -4,7 +4,7 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
   ArrowDownRight, ArrowUpRight, Banknote, Bell, CalendarDays, Check, CircleAlert,
-  Clock3, Coffee, CreditCard, LoaderCircle, MapPin, QrCode, X,
+  Clock3, Coffee, CreditCard, LoaderCircle, MapPin, Printer, QrCode, X,
 } from 'lucide-react';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -28,7 +28,7 @@ const exactTimeFormatter = new Intl.DateTimeFormat('id-ID', {
 });
 const moneyFormatter = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 });
 const toDate = value => new Date(value?.length === 10 ? value + 'T12:00:00+07:00' : value);
-export const money = amount => 'Rp' + moneyFormatter.format(amount ?? 0);
+export const money = amount => (amount < 0 ? '-Rp' : 'Rp') + moneyFormatter.format(Math.abs(amount ?? 0));
 export const number = value => moneyFormatter.format(value ?? 0);
 export const dateLabel = (value, style = 'short') => (style === 'long' ? longFormatter : style === 'year' ? dateFormatter : shortFormatter).format(toDate(value));
 export const timeLabel = (value, seconds = false) => (seconds ? exactTimeFormatter : timeFormatter).format(toDate(value)).replaceAll('.', ':');
@@ -75,7 +75,7 @@ export async function api(url, { method = 'GET', body, signal, outletId } = {}) 
     if (response.status === 401 && !['/login', '/demo'].includes(url)) {
       window.dispatchEvent(new Event('kelola:expired'));
     }
-    throw new Error(data.error || 'Permintaan tidak berhasil.');
+    throw Object.assign(new Error(data.error || 'Permintaan tidak berhasil.'), { code: data.code });
   }
   return data;
 }
@@ -256,24 +256,57 @@ export function Dialog({ title, description, onClose, children, className = '', 
   </dialog>;
 }
 
+export function PriceBreakdown({ sale }) {
+  return <div className="price-breakdown">
+    {sale.discount > 0 && <div className="price-original">
+      <div><span>Harga asli</span><strong>{money(sale.subtotal)}</strong></div>
+      <div className="price-discount"><span>{sale.promo?.name ? 'Diskon · ' + sale.promo.name : 'Diskon'}</span><strong>{money(-sale.discount)}</strong></div>
+    </div>}
+    <div className="payment-summary"><span>Total pembayaran</span><strong>{money(sale.amount)}</strong></div>
+  </div>;
+}
+
 export function Receipt({ sale, onClose }) {
   const [label, color] = saleStates[sale.status];
-  return <Dialog title="Detail transaksi" description={sale.id} onClose={onClose}>
-    <div className="receipt-meta">
-      <div><span>Kasir</span><strong>{sale.employee ?? 'Anda'}</strong></div>
-      <div><span>Metode</span><strong>{methodLabels[sale.method]}</strong></div>
-      <div><span>Waktu</span><strong>{dateLabel(sale.paidAt ?? sale.createdAt, 'year')} · {timeLabel(sale.paidAt ?? sale.createdAt)} WIB</strong></div>
-      <div><span>Status</span><Badge color={color}>{label}</Badge></div>
+  const sheet = useRef(null);
+  const timestamp = sale.paidAt ?? sale.createdAt;
+
+  function printReceipt() {
+    document.getElementById('kelola-print-root')?.remove();
+    const printRoot = document.createElement('div');
+    printRoot.id = 'kelola-print-root';
+    printRoot.append(sheet.current.cloneNode(true));
+    document.body.append(printRoot);
+    window.addEventListener('afterprint', () => printRoot.remove(), { once: true });
+    window.print();
+  }
+
+  return <Dialog title="Detail transaksi" onClose={onClose}>
+    <article className="receipt-sheet" ref={sheet}>
+      <header className="receipt-brand"><strong>{sale.storeName ?? 'Kelola'}</strong>
+        {sale.outletName && <span>{sale.outletName}</span>}<small>{sale.id}</small>
+      </header>
+      <div className="receipt-meta">
+        <div><span>Kasir</span><strong>{sale.employee ?? 'Anda'}</strong></div>
+        {sale.customerName && <div><span>Pelanggan</span><strong>{sale.customerName}</strong></div>}
+        <div><span>Metode</span><strong>{sale.amount === 0 ? 'Promo gratis' : methodLabels[sale.method]}</strong></div>
+        <div><span>Waktu</span><strong>{dateLabel(timestamp, 'year')} · {timeLabel(timestamp)} WIB</strong></div>
+        <div><span>Status</span><Badge color={color}>{label}</Badge></div>
+      </div>
+      <div className="receipt-items">{sale.items.map((item, index) => <div key={item.id + ':' + index}>
+        <div><strong>{item.name}</strong><span>{item.quantity} × {money(item.price)}</span></div>
+        <strong>{money(item.price * item.quantity)}</strong>
+      </div>)}</div>
+      <PriceBreakdown sale={sale} />
+      {sale.method === 'cash' && sale.amount > 0 && sale.cashReceived != null && <div className="receipt-meta receipt-cash">
+        <div><span>Uang diterima</span><strong>{money(sale.cashReceived)}</strong></div>
+        <div><span>Kembalian</span><strong>{money(sale.cashReceived - sale.amount)}</strong></div>
+      </div>}
+    </article>
+    <div className="dialog-actions">
+      {sale.status === 'paid' && <Button icon={Printer} onClick={printReceipt}>Cetak struk</Button>}
+      <Button kind="primary" onClick={onClose}>Selesai</Button>
     </div>
-    <div className="receipt-items">{sale.items.map((item, index) => <div key={item.id + ':' + index}>
-      <span>{item.quantity} × {item.name}</span><strong>{money(item.price * item.quantity)}</strong>
-    </div>)}</div>
-    <div className="receipt-total"><span>Total</span><strong>{money(sale.amount)}</strong></div>
-    {sale.method === 'cash' && sale.cashReceived != null && <div className="receipt-meta receipt-cash">
-      <div><span>Uang diterima</span><strong>{money(sale.cashReceived)}</strong></div>
-      <div><span>Kembalian</span><strong>{money(sale.cashReceived - sale.amount)}</strong></div>
-    </div>}
-    <div className="dialog-actions"><Button kind="primary" onClick={onClose}>Selesai</Button></div>
   </Dialog>;
 }
 

@@ -7,14 +7,15 @@ import '@fontsource-variable/manrope';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
-  ArrowLeftRight, ArrowRight, Bell, Box, ChartNoAxesCombined, Check, ChevronDown, ChevronRight, ChevronsUpDown,
-  Coffee, LayoutDashboard, LogOut, Menu, Plus, Settings, ShoppingCart, Store, Users, X,
+  ArrowLeftRight, ArrowRight, Bell, Box, Calculator, ChartNoAxesCombined, Check, ChevronDown, ChevronRight, ChevronsUpDown,
+  Coffee, LayoutDashboard, LogOut, Menu, Plus, Settings, ShoppingCart, Store, Tags, UserRound, Users, X,
   CalendarCheck,
 } from 'lucide-react';
 import {
   api, Avatar, Brand, Button, Dialog, ErrorText, NoticeList, OutletContext, Pending, ResourceState, Toast, useOutletApi, useResource, useToast,
 } from './common.jsx';
 import { AttendancePage, CatalogPage, OutletOverview, Overview, SalesPage, SettingsPage } from './owner.jsx';
+import { CustomersPage, ProfitPage, PromotionsPage } from './business.jsx';
 import { EmployeeAttendance, PointOfSale } from './employee.jsx';
 import './style.css';
 
@@ -23,10 +24,13 @@ const ownerMenus = [
     { id: 'ringkasan', label: 'Ringkasan', icon: LayoutDashboard },
     { id: 'semua-outlet', label: 'Semua outlet', icon: Store },
     { id: 'penjualan', label: 'Penjualan', icon: ChartNoAxesCombined },
+    { id: 'laba-rugi', label: 'Laba rugi', icon: Calculator },
     { id: 'absensi', label: 'Absensi', icon: CalendarCheck },
   ] },
   { label: 'Manajemen', entries: [
     { id: 'produk', label: 'Produk', icon: Box },
+    { id: 'pelanggan', label: 'Pelanggan', icon: UserRound },
+    { id: 'promo', label: 'Promo', icon: Tags },
     { id: 'karyawan', label: 'Karyawan', icon: Users },
     { id: 'pengaturan', label: 'Pengaturan', icon: Settings },
   ] },
@@ -211,6 +215,15 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
       break;
     case 'penjualan':
       content = <SalesPage />;
+      break;
+    case 'laba-rugi':
+      content = <ProfitPage />;
+      break;
+    case 'pelanggan':
+      content = <CustomersPage />;
+      break;
+    case 'promo':
+      content = <PromotionsPage notify={notify} />;
       break;
     case 'absensi':
       content = <AttendancePage session={outletSession} />;

@@ -6,11 +6,12 @@ import {
 } from 'lucide-react';
 import {
   api, Badge, Button, Card, dateLabel, Dialog, Empty, ErrorText, IconTile, locationStates, methodLabels,
-  money, Pending, Receipt, ResourceState, saleStates, SectionHeading, TimeChip,
+  money, Pending, PriceBreakdown, Receipt, ResourceState, saleStates, SectionHeading, TimeChip,
   timeLabel, today, useResource, WordTitle,
 } from './common.jsx';
 import { livenessLabels } from './liveness.js';
 import { useFaceVerification } from './use-face-verification.js';
+import { drawCameraFrame } from './camera-frame.js';
 
 const productIcon = category => /makanan|roti|snack/i.test(category) ? [Croissant, 'amber']
   : /^(non|minum)/i.test(category) ? [CupSoda, 'purple'] : [Coffee, 'green'];
@@ -78,8 +79,8 @@ export function PointOfSale({ session, notify }) {
           </div>
         </div>)}</div> : <Empty icon={ShoppingBag} title="Keranjang masih kosong">Pilih produk untuk memulai transaksi.</Empty>}
         <div className="cart-footer">
-          <div><span>Total pembayaran</span><strong>{money(amount)}</strong></div>
-          <Button kind="primary" disabled={!count} onClick={() => setPayment({ items: cartItems, total: amount })}>Lanjut bayar <ArrowRight size={17} /></Button>
+          <div><span>Subtotal</span><strong>{money(amount)}</strong></div>
+          <Button kind="primary" disabled={!count} onClick={() => setPayment({ items: cartItems })}>Lanjut bayar <ArrowRight size={17} /></Button>
         </div>
       </Card>
     </div>
@@ -90,7 +91,7 @@ export function PointOfSale({ session, notify }) {
             const [label, color] = saleStates[sale.status];
             return <button type="button" className="history-row" key={sale.id} onClick={() => {
               setShowHistory(false);
-              if (sale.status === 'pending') setPayment({ sale, total: sale.amount });
+              if (sale.status === 'pending') setPayment({ sale });
               else setReceipt(sale);
             }}>
               <IconTile icon={sale.method === 'cash' ? Banknote : QrCode} />
@@ -111,6 +112,11 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
   const [sale, setSale] = useState(draft.sale ?? null);
   const [method, setMethod] = useState('cash');
   const [cash, setCash] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState('');
+  const [quoteRevision, setQuoteRevision] = useState(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [qrVersion, setQrVersion] = useState(0);
@@ -119,11 +125,28 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
   const paidToast = useRef(false);
   const pendingDynamic = sale?.status === 'pending' && sale.provider === 'midtrans';
   const saleId = sale?.id;
+  const isFree = quote?.amount === 0;
   const methods = [
     { key: 'cash', icon: Banknote, enabled: true, copy: 'Terima uang tunai' },
     { key: 'qris_static', icon: QrCode, enabled: session.payments.static, copy: 'Konfirmasi di kasir' },
     { key: 'qris_dynamic', icon: QrCode, enabled: session.payments.dynamic, copy: 'Nominal otomatis' },
   ];
+  useEffect(() => {
+    if (saleId || !draft.items) return undefined;
+    const controller = new AbortController();
+    setQuote(null);
+    setQuoteError('');
+    const items = draft.items.map(({ id, quantity }) => ({ id, quantity }));
+    api('/sales/quote', { method: 'POST', body: { items }, signal: controller.signal }).then(result => {
+      if (controller.signal.aborted) return;
+      setQuote(result);
+      if (!result.amount) setMethod('cash');
+    }).catch(problem => {
+      if (!controller.signal.aborted) setQuoteError(problem.message);
+    });
+    return () => controller.abort();
+  }, [draft.items, quoteRevision, saleId]);
+
   useEffect(() => {
     if (!pendingDynamic) return undefined;
     const controller = new AbortController();
@@ -156,15 +179,23 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
       const result = await action();
       setSale(previous => previous?.status === 'paid' ? previous : result);
       after?.();
-    } catch (problem) { setError(problem.message); }
+    } catch (problem) {
+      setError(problem.message);
+      if (problem.code === 'QUOTE_CHANGED') {
+        setQuote(null);
+        setQuoteRevision(revision => revision + 1);
+      }
+    }
     finally { setBusy(false); }
   }
 
   function create(event) {
     event.preventDefault();
+    if (!quote || !customerName.trim()) return;
     const body = {
-      method, items: draft.items.map(({ id, quantity }) => ({ id, quantity })),
-      cashReceived: method === 'cash' ? Number(cash) : undefined,
+      method: isFree ? 'cash' : method, items: draft.items.map(({ id, quantity }) => ({ id, quantity })),
+      cashReceived: isFree ? 0 : method === 'cash' ? Number(cash) : undefined,
+      customer: { name: customerName, phone: customerPhone }, quote: quote.quote,
     };
     const fingerprint = JSON.stringify(body);
     if (request.current?.fingerprint !== fingerprint) {
@@ -182,7 +213,7 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
     const demo = sale.provider === 'demo';
     const manual = sale.provider === 'merchant';
     return <Dialog title={methodLabels[sale.method]} description={sale.id} onClose={close} busy={busy}>
-      <div className="payment-summary"><span>Total pembayaran</span><strong>{money(sale.amount)}</strong></div>
+      <PriceBreakdown sale={sale} />
       <div className="qr-box">
         {sale.qr && !imageError ? <img src={'/api/sales/' + sale.id + '/qr?v=' + qrVersion} alt={demo ? 'Kode QR simulasi' : 'Kode QRIS transaksi'}
           onError={() => setImageError(true)} /> : <span><QrCode size={36} /><small>{imageError ? 'QR belum bisa dimuat' : 'QR belum tersedia'}</small></span>}
@@ -208,24 +239,32 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
       </div>
     </Dialog>;
   }
-  return <Dialog title="Pembayaran" description="Pilih cara pelanggan membayar." onClose={close} busy={busy}>
+  return <Dialog title="Pembayaran" onClose={close} busy={busy}>
     <form className="form" onSubmit={create}>
-      <div className="payment-summary"><span>Total pembayaran</span><strong>{money(draft.total)}</strong></div>
-      <div className="payment-options" aria-label="Metode pembayaran">
+      <div className="form-pair checkout-customer">
+        <label>Nama pelanggan<input autoFocus required maxLength={70} value={customerName} onChange={event => setCustomerName(event.target.value)} /></label>
+        <label>Nomor telepon (opsional)<input type="tel" inputMode="tel" maxLength={35} value={customerPhone} onChange={event => setCustomerPhone(event.target.value)} /></label>
+      </div>
+      {quote ? <PriceBreakdown sale={quote} /> : quoteError
+        ? <ResourceState error={quoteError} reload={() => setQuoteRevision(revision => revision + 1)} />
+        : <Pending label="Menghitung harga dan promo…" />}
+      {quote && !isFree && <div className="payment-options" aria-label="Metode pembayaran">
         {methods.map(option => <button type="button" key={option.key} disabled={!option.enabled || busy}
           aria-pressed={method === option.key} className={'payment-option ' + (method === option.key ? 'selected' : '')}
           onClick={() => { setMethod(option.key); setError(''); }}>
           <option.icon size={19} /><strong>{methodLabels[option.key]}</strong><small>{option.enabled ? option.copy : 'Belum diatur'}</small>
         </button>)}
-      </div>
-      {method === 'cash' && <>
-        <label>Uang diterima (Rp)<input required autoFocus inputMode="numeric" type="number" min={draft.total} value={cash} onChange={event => setCash(event.target.value)} /></label>
-        <div className="cash-line"><button type="button" className="text-button" onClick={() => setCash(String(draft.total))}>Uang pas</button><span>Kembalian <strong>{money(Math.max(0, Number(cash) - draft.total))}</strong></span></div>
+      </div>}
+      {quote && !isFree && method === 'cash' && <>
+        <label>Uang diterima (Rp)<input required inputMode="numeric" type="number" min={quote.amount} value={cash} onChange={event => setCash(event.target.value)} /></label>
+        <div className="cash-line"><button type="button" className="text-button" onClick={() => setCash(String(quote.amount))}>Uang pas</button><span>Kembalian <strong>{money(Math.max(0, Number(cash) - quote.amount))}</strong></span></div>
       </>}
       <ErrorText text={error} />
       <div className="dialog-actions">
         <Button icon={ArrowLeft} onClick={close} disabled={busy}>Kembali</Button>
-        <Button kind="primary" type="submit" disabled={busy || method === 'cash' && Number(cash) < draft.total}>{busy ? 'Memproses…' : method === 'cash' ? 'Catat pembayaran' : 'Tampilkan QR'}</Button>
+        <Button kind="primary" type="submit" disabled={busy || !quote || !customerName.trim() || (!isFree && method === 'cash' && Number(cash) < quote.amount)}>
+          {busy ? 'Memproses…' : isFree ? 'Catat transaksi gratis' : method === 'cash' ? 'Catat pembayaran' : 'Tampilkan QR'}
+        </Button>
       </div>
     </form>
   </Dialog>;
@@ -293,7 +332,16 @@ function CaptureAttendance({ kind, session, close, complete }) {
   const [capturedAt, setCapturedAt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const face = useFaceVerification(video, kind);
+  const [portrait, setPortrait] = useState(() => matchMedia('(max-width: 650px)').matches);
+  const aspectRatio = portrait ? 3 / 4 : 16 / 9;
+  const face = useFaceVerification(video, kind, aspectRatio);
+
+  useEffect(() => {
+    const mobile = matchMedia('(max-width: 650px)');
+    const change = event => setPortrait(event.matches);
+    mobile.addEventListener('change', change);
+    return () => mobile.removeEventListener('change', change);
+  }, []);
 
   useEffect(() => {
     active.current = true;
@@ -312,7 +360,7 @@ function CaptureAttendance({ kind, session, close, complete }) {
     setStarting(true);
     try {
       const camera = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } }, audio: false,
+        video: { facingMode: 'user', width: { ideal: portrait ? 480 : 960 }, height: { ideal: portrait ? 640 : 720 } }, audio: false,
       });
       if (!active.current) { camera.getTracks().forEach(track => track.stop()); return; }
       stream.current?.getTracks().forEach(track => track.stop());
@@ -353,11 +401,7 @@ function CaptureAttendance({ kind, session, close, complete }) {
     if (!face.proof()) { setCameraError('Pastikan wajah masih terlihat setelah verifikasi.'); return; }
     if (!source.videoWidth) { setCameraError('Kamera belum siap. Tunggu sebentar lalu coba lagi.'); return; }
     const result = document.createElement('canvas');
-    const scale = Math.min(1, 900 / Math.max(source.videoWidth, source.videoHeight));
-    result.width = Math.round(source.videoWidth * scale);
-    result.height = Math.round(source.videoHeight * scale);
-    const canvas = result.getContext('2d');
-    canvas.drawImage(source, 0, 0, result.width, result.height);
+    const canvas = drawCameraFrame(result, source, aspectRatio, 900);
     const stamp = new Date().toISOString();
     const size = Math.max(12, Math.round(result.width / 30));
     canvas.fillStyle = 'rgba(10, 24, 16, 0.78)';
@@ -403,8 +447,9 @@ function CaptureAttendance({ kind, session, close, complete }) {
     action: livenessLabels[actions[count]],
     complete: 'Kedip dan senyum terverifikasi.',
   };
-  return <Dialog title={kind === 'in' ? 'Absen masuk' : 'Absen pulang'} description="Verifikasi wajah, ambil selfie, lalu sertakan lokasi GPS." onClose={close} busy={busy}>
-    <div className="capture-area">
+  return <Dialog title={kind === 'in' ? 'Absen masuk' : 'Absen pulang'} description="Verifikasi wajah, ambil selfie, lalu sertakan lokasi GPS." onClose={close} busy={busy}
+    className="attendance-capture-dialog">
+    <div className={'capture-area' + (portrait ? ' capture-portrait' : '')}>
       <video ref={video} autoPlay playsInline muted aria-label="Pratinjau kamera" hidden={!ready || !!photo} />
       {ready && !photo && <span className="face-guide" aria-hidden="true" />}
       {photo ? <img src={photo} alt="Selfie absensi dengan tanggal dan waktu pengambilan" /> : !ready && <div className="capture-placeholder">
