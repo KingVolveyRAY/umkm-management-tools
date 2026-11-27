@@ -1,14 +1,16 @@
-import { useId, useState } from 'react';
+import { lazy, Suspense, useId, useState } from 'react';
 import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Bell, CalendarDays,
-  Camera, ChevronLeft, ChevronRight, ClipboardList, Coffee, Crosshair, ImagePlus,
-  MapPin, Package, Pencil, Plus, QrCode, ReceiptText, Target, UserRoundCheck, Users, Wallet,
+  Camera, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Coffee, Crosshair, ImagePlus,
+  MapPin, Package, Pencil, Plus, QrCode, ReceiptText, Store, Target, Trash2, UserRoundCheck, Users, Wallet,
 } from 'lucide-react';
 import {
-  api, Avatar, Badge, Button, Card, change, DateControl, dateLabel, Dialog, Empty, ErrorText,
-  IconTile, locationStates, methodLabels, money, NoticeList, number, Receipt, ResourceState,
-  SaleTable, SectionHeading, shift, timeLabel, today, Trend, useResource, WordTitle,
+  Avatar, Badge, Button, Card, change, DateControl, dateLabel, Dialog, Empty, ErrorText,
+  IconTile, locationStates, methodLabels, money, monthLabel, NoticeList, number, Pending, Receipt, ResourceState,
+  SaleTable, SectionHeading, shift, timeLabel, today, Trend, useOutletApi, useOutletId, useResource, WordTitle,
 } from './common.jsx';
+
+const OutletMap = lazy(() => import('./outlet-map.jsx'));
 
 function Metric({ icon, color, label, value, trend, note, index, onClick }) {
   return <Card className="metric" index={index} lift as={onClick ? 'button' : 'article'} type={onClick ? 'button' : undefined} onClick={onClick}>
@@ -123,6 +125,7 @@ export function Overview({ session, navigate, openNotices }) {
     </SectionHeading>
     <Card className="welcome-banner">
       <div className="hero-rings" aria-hidden="true"><i /><i /><i /><i /><i /></div>
+      <img className="hero-avatar" src="/kelola-icon.png" alt="" aria-hidden="true" />
       <div className="welcome-copy">
         <span className="welcome-kicker"><i />Outlet {session.store.outlet}</span>
         <WordTitle>{'Selamat datang, ' + session.user.name.split(' ')[0] + '!'}</WordTitle>
@@ -134,6 +137,7 @@ export function Overview({ session, navigate, openNotices }) {
       <div className="metric-grid">
         {metrics.map(({ page, ...metric }, index) => <Metric key={metric.label} {...metric} index={index} onClick={() => navigate(page)} />)}
       </div>
+      <MonthlyTarget key={day.slice(0, 7)} initialMonth={day.slice(0, 7)} />
       <div className="dashboard-grid">
         <SalesChart entries={data.series} days={days} setDays={setDays} />
         <Card className="panel activity-panel" index={2}>
@@ -157,7 +161,98 @@ export function Overview({ session, navigate, openNotices }) {
   </>;
 }
 
+function MonthlyTarget({ initialMonth }) {
+  const api = useOutletApi();
+  const [month, setMonth] = useState(initialMonth);
+  const resource = useResource('/owner/targets/' + month, 12000);
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const target = resource.data;
+  const progress = target?.amount ? Math.round(target.revenue / target.amount * 100) : 0;
+  return <>
+    <Card className="panel target-panel" index={2}>
+      <header className="panel-header">
+        <div className="target-heading">
+          <IconTile icon={Target} color="purple" />
+          <div><WordTitle>Target pendapatan</WordTitle><p>{monthLabel(month)}</p></div>
+        </div>
+        <div className="target-actions">
+          <input type="month" aria-label="Bulan target pendapatan" value={month} onChange={event => {
+            if (/^\d{4}-\d{2}$/.test(event.target.value)) setMonth(event.target.value);
+          }} />
+          <Button icon={Pencil} disabled={!target} onClick={() => { setAmount(String(target.amount)); setError(''); setEditing(true); }}>
+            Atur target
+          </Button>
+        </div>
+      </header>
+      {!target ? <ResourceState error={resource.error} reload={resource.reload} /> : <>
+        <div className="target-totals">
+          <div><strong>{money(target.revenue)}</strong><span>{target.amount ? ' dari ' + money(target.amount) : ' bulan ini'}</span></div>
+          {target.amount > 0 && <Badge color={progress >= 100 ? 'green' : 'purple'} dot={false}>{number(progress)}%</Badge>}
+        </div>
+        {target.amount > 0 ? <>
+          <progress className="target-progress" aria-label="Pencapaian target pendapatan" max="100" value={Math.min(progress, 100)} />
+          <p className="field-note">{target.revenue >= target.amount ? 'Target tercapai' : 'Sisa target ' + money(target.amount - target.revenue)}</p>
+        </> : <p className="field-note">Target bulan ini belum diatur.</p>}
+      </>}
+    </Card>
+    {editing && <Dialog title="Atur target pendapatan" description={monthLabel(month)} onClose={() => setEditing(false)} busy={busy}>
+      <form className="form" onSubmit={async event => {
+        event.preventDefault();
+        setBusy(true);
+        setError('');
+        try {
+          await api('/owner/targets/' + month, { method: 'PUT', body: { amount: Number(amount) } });
+          resource.reload();
+          setEditing(false);
+        } catch (problem) { setError(problem.message); }
+        finally { setBusy(false); }
+      }}>
+        <label>Target bulan ini (Rp)<input autoFocus required type="number" inputMode="numeric" min="0" max="1000000000000"
+          step="1" value={amount} onChange={event => setAmount(event.target.value)} /></label>
+        <p className="field-note">Masukkan 0 untuk melepas target bulan ini.</p>
+        <ErrorText text={error} />
+        <div className="dialog-actions">
+          <Button onClick={() => setEditing(false)} disabled={busy}>Batal</Button>
+          <Button kind="primary" type="submit" disabled={busy}>{busy ? 'Menyimpan…' : 'Simpan target'}</Button>
+        </div>
+      </form>
+    </Dialog>}
+  </>;
+}
+
+export function OutletOverview({ onSelect, onAdd }) {
+  const [day, setDay] = useState(today);
+  const { data, error, reload } = useResource('/owner/outlets/summary?day=' + day, 12000);
+  return <>
+    <SectionHeading title="Semua outlet" description="Lihat penjualan dan kehadiran di setiap usaha.">
+      <DateControl value={day} onChange={setDay} />
+      <Button kind="primary" icon={Plus} onClick={onAdd}>Tambah outlet</Button>
+    </SectionHeading>
+    {!data ? <ResourceState error={error} reload={reload} /> : <div className="outlet-grid">
+      {data.rows.map((outlet, index) => <Card key={outlet.id} className="panel outlet-summary" index={index} lift>
+        <header className="panel-header">
+          <div className="target-heading"><IconTile icon={Store} color={['green', 'amber', 'purple', 'blue'][index % 4]} />
+            <div><h2>{outlet.name}</h2><p>{outlet.outlet}</p></div>
+          </div>
+        </header>
+        <p className="outlet-sales-label">Pendapatan {dateLabel(day)}</p>
+        <strong className="metric-value">{money(outlet.today)}</strong>
+        <div className="outlet-summary-line"><span>{number(outlet.transactions)} transaksi</span><span>{number(outlet.present)} hadir</span></div>
+        <div className="outlet-month-line">
+          <span>{monthLabel(data.month)}</span><strong>{money(outlet.revenue)}{outlet.target > 0 && ' / ' + money(outlet.target)}</strong>
+        </div>
+        {outlet.target > 0 && <progress aria-label={'Target ' + outlet.name} className="target-progress" max="100" value={Math.min(outlet.revenue / outlet.target * 100, 100)} />}
+        <Button icon={ArrowUpRight} onClick={() => onSelect(outlet.id, 'ringkasan')}>Buka outlet</Button>
+      </Card>)}
+    </div>}
+  </>;
+}
+
 export function SalesPage() {
+  const outletId = useOutletId();
   const [from, setFrom] = useState(() => shift(today(), -6));
   const [to, setTo] = useState(today);
   const [method, setMethod] = useState('');
@@ -168,7 +263,13 @@ export function SalesPage() {
   const { data, error, reload } = useResource('/owner/sales?' + query + '&page=' + page, 12000);
   return <>
     <SectionHeading title="Penjualan" description="Lihat riwayat transaksi, metode pembayaran, dan pendapatan usaha.">
-      <a className="button button-secondary" href={'/api/owner/sales?' + query + '&format=csv'} download><ArrowDownToLine size={16} />Ekspor CSV</a>
+      <details className="export-picker">
+        <summary className="button button-secondary"><ArrowDownToLine size={16} />Ekspor laporan<ChevronDown size={15} /></summary>
+        <div className="export-options">
+          {[['csv', 'CSV'], ['pdf', 'PDF'], ['xlsx', 'Excel (.xlsx)']].map(([format, label]) => <a key={format}
+            href={'/api/owner/sales?' + query + '&outletId=' + outletId + '&format=' + format} download>{label}</a>)}
+        </div>
+      </details>
     </SectionHeading>
     <div className="metric-grid metric-grid-three">
       <Metric icon={Wallet} color="green" label="Pendapatan" value={data ? money(data.revenue) : '—'} note="Dari transaksi lunas" />
@@ -202,18 +303,23 @@ export function SalesPage() {
 
 function AttendanceDetail({ record, outlet, onClose }) {
   const [label, color] = locationStates[record.venueStatus];
+  const outletId = useOutletId();
   return <Dialog title={record.name} description={(record.kind === 'in' ? 'Absen masuk' : 'Absen pulang') + ' · ' + dateLabel(record.timestamp, 'year')} onClose={onClose}>
     {record.hasPhoto
-      ? <img className="attendance-photo" src={'/api/attendance/' + record.id + '/photo'} alt={'Selfie absensi ' + record.name} />
+      ? <img className="attendance-photo" src={'/api/attendance/' + record.id + '/photo?outletId=' + outletId} alt={'Selfie absensi ' + record.name} />
       : <div className="photo-placeholder"><Camera size={24} /><span>Selfie tidak tersedia untuk catatan ini</span></div>}
     <div className="receipt-meta">
       <div><span>Waktu tercatat</span><strong>{timeLabel(record.timestamp, true)} WIB</strong></div>
       <div><span>Lokasi</span><Badge color={color}>{label}</Badge></div>
       <div><span>Jarak dari {outlet}</span><strong>{record.distance} m</strong></div>
       <div><span>Akurasi GPS</span><strong>±{Math.round(record.accuracy)} m</strong></div>
+      {Boolean(record.livenessVerified) && <div><span>Gerakan wajah</span><Badge color="green">Kedip dan senyum</Badge></div>}
     </div>
+    <Suspense fallback={<Pending label="Memuat peta…" />}>
+      <OutletMap latitude={record.latitude} longitude={record.longitude} />
+    </Suspense>
     <div className="map-link">
-      <MapPin size={17} /><span>{record.latitude.toFixed(6)}, {record.longitude.toFixed(6)}</span>
+      <MapPin size={17} /><span>Pin lokasi absensi</span>
       <a className="text-button" target="_blank" rel="noreferrer" href={'https://www.google.com/maps/search/?api=1&query=' + record.latitude + ',' + record.longitude}>Buka peta <ArrowUpRight size={15} /></a>
     </div>
   </Dialog>;
@@ -269,6 +375,7 @@ export function AttendancePage({ session }) {
 }
 
 export function CatalogPage({ employees = false, notify }) {
+  const api = useOutletApi();
   const endpoint = employees ? '/owner/employees' : '/owner/products';
   const { data, error, reload } = useResource(employees ? endpoint : '/products');
   const [editor, setEditor] = useState(null);
@@ -276,6 +383,7 @@ export function CatalogPage({ employees = false, notify }) {
   const openForm = row => setEditor({
     id: row?.id, name: row?.name ?? '', category: row?.category ?? '', price: row?.price ?? '',
     username: row?.username ?? '', password: '', active: row ? Boolean(row.active) : true,
+    costComponents: (row?.costComponents ?? []).map((component, index) => ({ ...component, key: 'saved-' + index })),
   });
   return <>
     <SectionHeading title={employees ? 'Karyawan' : 'Produk'} description={employees
@@ -287,11 +395,13 @@ export function CatalogPage({ employees = false, notify }) {
       {!data ? <ResourceState error={error} reload={reload} /> : !data.rows.length
         ? <Empty icon={employees ? Users : Package} title={'Belum ada ' + noun}>Tambahkan {noun} untuk mulai menggunakan kasir.</Empty>
         : <div className="table-overflow"><table>
-          <thead><tr><th>Nama</th><th>{employees ? 'Nama pengguna' : 'Kategori'}</th>{!employees && <th>Harga</th>}<th>Status</th><th className="align-right">Aksi</th></tr></thead>
+          <thead><tr><th>Nama</th><th>{employees ? 'Nama pengguna' : 'Kategori'}</th>
+            {!employees && <><th>Harga</th><th>HPP per produk</th></>}<th>Status</th><th className="align-right">Aksi</th></tr></thead>
           <tbody>{data.rows.map((row, index) => <tr key={row.id}>
             <td><div className="person-cell">{employees ? <Avatar name={row.name} color={['green', 'blue', 'amber', 'purple'][index % 4]} /> : <IconTile icon={Coffee} color="amber" />}<strong>{row.name}</strong></div></td>
             <td>{employees ? row.username : row.category}</td>
-            {!employees && <td className="amount-cell">{money(row.price)}</td>}
+            {!employees && <><td className="amount-cell">{money(row.price)}</td>
+              <td className="amount-cell">{row.costComponents.length ? money(row.costTotal) : '—'}</td></>}
             <td><Badge color={row.active ? 'green' : 'neutral'}>{row.active ? 'Aktif' : 'Nonaktif'}</Badge></td>
             <td className="align-right"><Button icon={Pencil} onClick={() => openForm(row)} aria-label={'Edit ' + row.name}>Edit</Button></td>
           </tr>)}</tbody>
@@ -311,12 +421,21 @@ function CatalogEditor({ employees, noun, editor, close, save }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   function edit(key, value) { setForm(prev => ({ ...prev, [key]: value })); }
+  function editCost(key, field, value) {
+    setForm(prev => ({ ...prev, costComponents: prev.costComponents.map(cost => cost.key === key ? { ...cost, [field]: value } : cost) }));
+  }
+  const totalCost = form.costComponents.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   return <Dialog title={(editor.id ? 'Edit ' : 'Tambah ') + noun} onClose={close} busy={busy}>
     <form className="form" onSubmit={async event => {
       event.preventDefault();
       setBusy(true);
       setError('');
-      try { await save(employees ? form : { ...form, price: Number(form.price) }); }
+      try {
+        await save(employees ? form : {
+          ...form, price: Number(form.price),
+          costComponents: form.costComponents.map(({ name, amount }) => ({ name, amount: Number(amount) })),
+        });
+      }
       catch (problem) { setError(problem.message); }
       finally { setBusy(false); }
     }}>
@@ -327,6 +446,23 @@ function CatalogEditor({ employees, noun, editor, close, save }) {
       </> : <>
         <label>Kategori<input required maxLength={40} value={form.category} onChange={event => edit('category', event.target.value)} /></label>
         <label>Harga (Rp)<input required type="number" min={100} max={100000000} value={form.price} onChange={event => edit('price', event.target.value)} /></label>
+        <fieldset className="hpp-fields">
+          <legend>Harga pokok produk (HPP)</legend>
+          <p className="field-note">Isi biaya tiap komponen untuk satu produk.</p>
+          {form.costComponents.map((cost, index) => <div className="hpp-line" key={cost.key}>
+            <label>Komponen {index + 1}<input required maxLength={70} value={cost.name} onChange={event => editCost(cost.key, 'name', event.target.value)} /></label>
+            <label>Biaya (Rp)<input required type="number" inputMode="numeric" min="0" max="100000000" step="1"
+              value={cost.amount} onChange={event => editCost(cost.key, 'amount', event.target.value)} /></label>
+            <button type="button" className="icon-button" aria-label={'Hapus komponen ' + (index + 1)}
+              onClick={() => setForm(prev => ({ ...prev, costComponents: prev.costComponents.filter(row => row.key !== cost.key) }))}>
+              <Trash2 size={16} />
+            </button>
+          </div>)}
+          <Button icon={Plus} disabled={form.costComponents.length >= 24} onClick={() => setForm(prev => ({
+            ...prev, costComponents: [...prev.costComponents, { key: crypto.randomUUID(), name: '', amount: '' }],
+          }))}>Tambah komponen</Button>
+          <div className="hpp-total"><span>Total HPP per produk</span><strong>{money(totalCost)}</strong></div>
+        </fieldset>
       </>}
       <label className="checkbox"><input type="checkbox" checked={form.active} onChange={event => edit('active', event.target.checked)} />{employees ? 'Izinkan masuk ke panel karyawan' : 'Tampilkan di kasir'}</label>
       <ErrorText text={error} />
@@ -345,13 +481,15 @@ export function SettingsPage({ updateSession, notify }) {
 }
 
 function SettingsForm({ defaults, updateSession, notify }) {
-  const [form, setForm] = useState({
-    ...defaults, latitude: defaults.latitude ?? '', longitude: defaults.longitude ?? '',
-  });
+  const api = useOutletApi();
+  const [form, setForm] = useState(defaults);
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
   const edit = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const setPin = (latitude, longitude) => setForm(prev => ({ ...prev,
+    latitude: Number(latitude.toFixed(6)), longitude: Number(longitude.toFixed(6)),
+  }));
   const labels = { demo: 'Mode demo', sandbox: 'Midtrans sandbox', live: 'Midtrans aktif', off: 'Belum terhubung' };
   async function readQr(event) {
     const file = event.target.files?.[0];
@@ -379,14 +517,14 @@ function SettingsForm({ defaults, updateSession, notify }) {
   }
 
   function locate() {
-    if (!navigator.geolocation) { setError('Perangkat ini tidak menyediakan GPS. Isi koordinat secara manual.'); return; }
+    if (!navigator.geolocation) { setError('Perangkat ini tidak menyediakan GPS. Tentukan pin di peta.'); return; }
     setLocating(true);
     setError('');
     navigator.geolocation.getCurrentPosition(({ coords }) => {
-      setForm(prev => ({ ...prev, latitude: coords.latitude.toFixed(6), longitude: coords.longitude.toFixed(6) }));
+      setPin(coords.latitude, coords.longitude);
       setLocating(false);
     }, () => {
-      setError('Lokasi tidak dapat dibaca. Periksa izin lokasi atau isi koordinat secara manual.');
+      setError('Lokasi belum terbaca. Periksa izin perangkat atau tentukan pin di peta.');
       setLocating(false);
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
   }
@@ -399,8 +537,7 @@ function SettingsForm({ defaults, updateSession, notify }) {
       const session = await api('/owner/settings', {
         method: 'PUT',
         body: {
-          ...form, radius: Number(form.radius), latitude: form.latitude === '' ? null : Number(form.latitude),
-          longitude: form.longitude === '' ? null : Number(form.longitude), staticQris: form.staticQris.trim(),
+          ...form, radius: Number(form.radius), staticQris: form.staticQris.trim(),
         },
       });
       updateSession(session);
@@ -416,12 +553,14 @@ function SettingsForm({ defaults, updateSession, notify }) {
     <Card className="panel settings-card" index={1}>
       <header className="panel-header"><div><WordTitle>Area absensi</WordTitle><p>Lokasi ini menjadi titik acuan jarak GPS.</p></div><IconTile icon={MapPin} color="blue" /></header>
       <div className="form">
-        <div className="form-pair">
-          <label>Latitude<input type="number" step="any" min={-90} max={90} value={form.latitude} onChange={event => edit('latitude', event.target.value)} /></label>
-          <label>Longitude<input type="number" step="any" min={-180} max={180} value={form.longitude} onChange={event => edit('longitude', event.target.value)} /></label>
-        </div>
+        <Suspense fallback={<Pending label="Memuat peta…" />}>
+          <OutletMap latitude={form.latitude} longitude={form.longitude} radius={Number(form.radius)} onSelect={setPin} />
+        </Suspense>
         <label>Radius (meter)<input required type="number" min={25} max={5000} value={form.radius} onChange={event => edit('radius', event.target.value)} /></label>
-        <Button icon={Crosshair} onClick={locate} disabled={locating}>{locating ? 'Membaca GPS…' : 'Gunakan lokasi saya'}</Button>
+        <div className="pin-actions">
+          <Button icon={Crosshair} onClick={locate} disabled={locating}>{locating ? 'Membaca GPS…' : 'Gunakan lokasi saya'}</Button>
+          {form.latitude != null && <Badge color="green">Pin terpasang</Badge>}
+        </div>
       </div>
     </Card>
     <Card className="panel settings-card settings-wide" index={2}>

@@ -18,6 +18,13 @@ export function shiftDay(day, offset) {
   return localDay(date);
 }
 
+export function monthRange(month) {
+  const start = month + '-01';
+  const next = new Date(start + 'T12:00:00+07:00');
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  return [start, localDay(next)];
+}
+
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
   return salt + ':' + scryptSync(password, salt, 64).toString('hex');
@@ -50,6 +57,12 @@ export function databaseSchema(postgres = false) {
       radius INTEGER NOT NULL DEFAULT 150, static_qris TEXT,
       mode TEXT NOT NULL CHECK (mode IN ('demo','live'))
     );
+    CREATE TABLE IF NOT EXISTS outlets (
+      id ${id} PRIMARY KEY,
+      name TEXT NOT NULL, outlet TEXT NOT NULL, latitude ${real}, longitude ${real},
+      radius INTEGER NOT NULL DEFAULT 150, static_qris TEXT
+    );
+    CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS users (
       id ${id} PRIMARY KEY, name TEXT NOT NULL,
       username TEXT NOT NULL UNIQUE ${postgres ? '' : 'COLLATE NOCASE'}, password_hash TEXT NOT NULL,
@@ -87,8 +100,40 @@ export function databaseSchema(postgres = false) {
       id ${id} PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL,
       created_at TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS revenue_targets (
+      outlet_id INTEGER NOT NULL REFERENCES outlets(id), month TEXT NOT NULL,
+      amount BIGINT NOT NULL CHECK (amount >= 0),
+      PRIMARY KEY (outlet_id,month)
+    );
+    CREATE TABLE IF NOT EXISTS attendance_challenges (
+      id TEXT PRIMARY KEY, employee_id INTEGER NOT NULL REFERENCES users(id),
+      outlet_id INTEGER NOT NULL REFERENCES outlets(id), kind TEXT NOT NULL,
+      steps TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS attendance_challenges_employee ON attendance_challenges (employee_id,kind);
   `;
 }
+
+export const outletMigrationColumns = [
+  ...['users', 'products', 'sales', 'attendance', 'notices'].map(table => [table, 'outlet_id', 'INTEGER NOT NULL DEFAULT 1']),
+  ['products', 'cost_components', "TEXT NOT NULL DEFAULT '[]'"],
+  ['products', 'cost_total', 'INTEGER NOT NULL DEFAULT 0'],
+  ['attendance', 'liveness_verified', 'INTEGER NOT NULL DEFAULT 0'],
+];
+
+export const migrateFirstOutlet = `
+  INSERT INTO outlets (id,name,outlet,latitude,longitude,radius,static_qris)
+  SELECT id,name,outlet,latitude,longitude,radius,static_qris FROM store WHERE id = 1
+  ON CONFLICT (id) DO NOTHING
+`;
+
+export const outletIndexes = `
+  CREATE INDEX IF NOT EXISTS sales_outlet_day ON sales (outlet_id,status,paid_day);
+  CREATE INDEX IF NOT EXISTS attendance_outlet_day ON attendance (outlet_id,day);
+  CREATE INDEX IF NOT EXISTS notices_outlet_time ON notices (outlet_id,created_at);
+  CREATE INDEX IF NOT EXISTS products_outlet ON products (outlet_id,active,id);
+  CREATE INDEX IF NOT EXISTS users_outlet_role ON users (outlet_id,role,active);
+`;
 
 export function verifyMode(existing, demo) {
   if (existing && existing.mode !== (demo ? 'demo' : 'live')) {
@@ -123,6 +168,17 @@ export function openStore(path, options) {
       verifyMode(existing, options.demo);
       if (!existing) {
         for (const [sql, args] of initialRows(options)) db.prepare(sql).run(...args);
+      }
+      if (!db.prepare('SELECT version FROM schema_migrations WHERE version = 1').get()) {
+        db.exec(migrateFirstOutlet);
+        for (const [table, column, definition] of outletMigrationColumns) {
+          const columns = db.prepare('PRAGMA table_info(' + table + ')').all();
+          if (!columns.some(entry => entry.name === column)) {
+            db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition);
+          }
+        }
+        db.exec(outletIndexes);
+        db.exec('INSERT INTO schema_migrations VALUES (1)');
       }
     });
     return db;

@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, ArrowRight, Banknote, Camera, Check, ChevronRight, Clock3, Coffee, Crosshair,
   Croissant, CupSoda, History, LogIn, LogOut, MapPin, Minus, Plus, QrCode, ReceiptText,
-  RefreshCw, Search, ShoppingBag, Trash2, Video,
+  RefreshCw, ScanFace, Search, ShoppingBag, Trash2, Video,
 } from 'lucide-react';
 import {
   api, Badge, Button, Card, dateLabel, Dialog, Empty, ErrorText, IconTile, locationStates, methodLabels,
-  money, Receipt, ResourceState, saleStates, SectionHeading, TimeChip,
+  money, Pending, Receipt, ResourceState, saleStates, SectionHeading, TimeChip,
   timeLabel, today, useResource, WordTitle,
 } from './common.jsx';
+import { livenessLabels } from './liveness.js';
+import { useFaceVerification } from './use-face-verification.js';
 
 const productIcon = category => /makanan|roti|snack/i.test(category) ? [Croissant, 'amber']
   : /^(non|minum)/i.test(category) ? [CupSoda, 'purple'] : [Coffee, 'green'];
@@ -291,6 +293,7 @@ function CaptureAttendance({ kind, session, close, complete }) {
   const [capturedAt, setCapturedAt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const face = useFaceVerification(video, kind);
 
   useEffect(() => {
     active.current = true;
@@ -316,7 +319,10 @@ function CaptureAttendance({ kind, session, close, complete }) {
       stream.current = camera;
       video.current.srcObject = camera;
       await video.current.play();
-      if (active.current) setReady(true);
+      if (active.current) {
+        setReady(true);
+        face.start();
+      }
     } catch (problem) {
       if (active.current) setCameraError(problem.name === 'NotAllowedError'
         ? 'Izin kamera ditolak. Izinkan kamera di pengaturan browser.' : 'Kamera tidak dapat dibuka. Periksa apakah kamera tersedia.');
@@ -344,6 +350,7 @@ function CaptureAttendance({ kind, session, close, complete }) {
 
   function takePhoto() {
     const source = video.current;
+    if (!face.proof()) { setCameraError('Pastikan wajah masih terlihat setelah verifikasi.'); return; }
     if (!source.videoWidth) { setCameraError('Kamera belum siap. Tunggu sebentar lalu coba lagi.'); return; }
     const result = document.createElement('canvas');
     const scale = Math.min(1, 900 / Math.max(source.videoWidth, source.videoHeight));
@@ -360,31 +367,65 @@ function CaptureAttendance({ kind, session, close, complete }) {
     canvas.textBaseline = 'middle';
     canvas.fillText(dateLabel(stamp, 'year') + '  •  ' + timeLabel(stamp, true) + ' WIB', size, result.height - size * 1.2, result.width - size * 2);
     setCameraError('');
+    face.pause();
     setCapturedAt(stamp);
     setPhoto(result.toDataURL('image/jpeg', 0.78));
   }
 
   async function submit() {
     setError('');
+    const proof = face.proof();
+    if (!proof || Date.now() >= proof.expiresAt) { setError('Verifikasi kedaluwarsa. Ambil ulang selfie dan verifikasi wajah.'); return; }
     if (Date.now() - geo.timestamp > 120000) { setError('Lokasi sudah lewat dua menit. Ambil lokasi lagi.'); return; }
     if (Date.now() - Date.parse(capturedAt) > 120000) { setError('Selfie sudah lewat dua menit. Ambil ulang foto.'); return; }
     setBusy(true);
     try {
-      const result = await api('/attendance', { method: 'POST', body: { kind, selfie: photo, ...geo } });
+      const result = await api('/attendance', { method: 'POST', body: { kind, selfie: photo, ...geo, proof: { id: proof.id, steps: proof.steps } } });
       complete(result);
     } catch (problem) { setError(problem.message); }
     finally { if (active.current) setBusy(false); }
   }
 
-  return <Dialog title={kind === 'in' ? 'Absen masuk' : 'Absen pulang'} description="Ambil selfie dan lokasi GPS sebelum mengirim." onClose={close} busy={busy}>
+  function retry() {
+    setPhoto('');
+    setCapturedAt(null);
+    setCameraError('');
+    setError('');
+    face.start();
+  }
+
+  const { actions, count, cue, error: faceError } = face.state;
+  const messages = {
+    missing: 'Arahkan wajah ke kamera.',
+    multiple: 'Pastikan hanya kamu yang terlihat.',
+    position: 'Dekatkan wajah ke tengah kamera.',
+    neutral: 'Rilekskan wajah dan lihat kamera.',
+    action: livenessLabels[actions[count]],
+    complete: 'Kedip dan senyum terverifikasi.',
+  };
+  return <Dialog title={kind === 'in' ? 'Absen masuk' : 'Absen pulang'} description="Verifikasi wajah, ambil selfie, lalu sertakan lokasi GPS." onClose={close} busy={busy}>
     <div className="capture-area">
       <video ref={video} autoPlay playsInline muted aria-label="Pratinjau kamera" hidden={!ready || !!photo} />
+      {ready && !photo && <span className="face-guide" aria-hidden="true" />}
       {photo ? <img src={photo} alt="Selfie absensi dengan tanggal dan waktu pengambilan" /> : !ready && <div className="capture-placeholder">
         <IconTile icon={Video} /><span>{starting ? 'Membuka kamera…' : 'Kamera belum aktif'}</span>
       </div>}
     </div>
+    {ready && <section className="face-check" aria-label="Verifikasi gerakan wajah">
+      {cue === 'loading' ? <Pending label="Menyiapkan verifikasi wajah…" /> : <>
+        <div className="face-note"><ScanFace size={18} /><strong role="status">{messages[cue] ?? 'Verifikasi wajah'}</strong></div>
+        {!!actions.length && <ol className="face-steps">
+          {actions.map((action, index) => <li key={action} data-done={count > index} aria-current={count === index ? 'step' : undefined}>
+            {count > index && <Check size={13} />}{action === 'blink' ? 'Kedip' : 'Senyum'}
+          </li>)}
+        </ol>}
+      </>}
+      <ErrorText text={faceError} />
+      {cue === 'error' && <Button icon={RefreshCw} onClick={retry}>Ulangi verifikasi</Button>}
+    </section>}
     <div className="capture-actions">
-      <Button icon={Camera} disabled={starting || busy} onClick={() => photo ? setPhoto('') : ready ? takePhoto() : startCamera()}>
+      <Button icon={Camera} disabled={starting || busy || (ready && !photo && cue !== 'complete')}
+        onClick={() => photo ? retry() : ready ? takePhoto() : startCamera()}>
         {photo ? 'Ambil ulang' : ready ? 'Ambil selfie' : 'Aktifkan kamera'}
       </Button>
       {capturedAt && photo && <TimeChip timestamp={capturedAt} />}

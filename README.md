@@ -1,6 +1,6 @@
 # Kelola
 
-Aplikasi satu outlet untuk pemilik dan karyawan UMKM. Panel pemilik menampilkan penjualan harian dan historis, notifikasi, katalog, akun karyawan, dan absensi. Panel karyawan menyediakan kasir dan absensi masuk serta pulang. Antarmuka memakai React, GSAP dan ScrollTrigger untuk judul per kata, Motion untuk kartu, serta Lenis untuk smooth scroll.
+Aplikasi untuk memantau beberapa outlet atau usaha UMKM dari satu akun pemilik. Panel pemilik menampilkan penjualan, target pendapatan bulanan, notifikasi, katalog dengan HPP, akun karyawan, dan absensi setiap outlet. Panel karyawan menyediakan kasir dan absensi masuk serta pulang untuk outlet tempat akunnya dibuat. Antarmuka claymorphism memakai React, GSAP dan ScrollTrigger, Motion, serta Lenis.
 
 ## Menjalankan demo
 
@@ -36,10 +36,15 @@ Setelan nama pengguna dan kata sandi pemilik hanya dipakai saat pertama kali men
 ## Menyiapkan outlet
 
 1. Untuk instalasi lokal, salin `.env.example` ke `.env`, set `DEMO_MODE=0`, lalu buat akun pemilik awal dengan `OWNER_USERNAME` dan `OWNER_PASSWORD` sepanjang 12–128 karakter. Jalankan aplikasi dengan HTTPS untuk penggunaan di perangkat karyawan, dan atur `COOKIE_SECURE=1` saat HTTPS tersedia. Browser juga mengizinkan kamera dan lokasi pada localhost untuk pengembangan.
-2. Masuk sebagai pemilik, tambahkan akun karyawan dan produk, lalu atur titik lokasi serta radius di **Pengaturan outlet**. Absensi menyimpan selfie bertanda waktu WIB dan mencatat waktu penerimaan di server. Status radius mempertimbangkan jarak dan akurasi GPS yang dilaporkan perangkat. Periksa selfie dan GPS yang ditandai dari daftar absensi.
+2. Masuk sebagai pemilik. Gunakan **Semua outlet → Tambah outlet** untuk membuat usaha atau cabang baru. Pemilih outlet di navigasi menentukan ruang kerja untuk penjualan, karyawan, absensi, dan produk. Koneksi database pertama setelah pembaruan memindahkan pengaturan usaha lama ke outlet pertama. Data historis otomatis dikaitkan ke outlet tersebut.
 3. Untuk **QRIS statis**, masukkan payload QRIS merchant dalam rupiah atau unggah gambar PNG, JPG, atau WebP untuk membacanya. Pembeli memasukkan nominal di aplikasi pembayaran. Kasir menandai lunas setelah melihat dana masuk di aplikasi merchant. Pemilik mendapat notifikasi konfirmasi kasir.
 4. Untuk **QRIS dinamis**, aktifkan QRIS GoPay pada akun merchant Midtrans Core API dan atur `MIDTRANS_SERVER_KEY` di server. Mulai di sandbox dengan `MIDTRANS_PRODUCTION=0` dan gunakan server key produksi bersama `MIDTRANS_PRODUCTION=1` saat siap. Server perlu akses HTTPS ke `api.sandbox.midtrans.com` atau `api.midtrans.com` sesuai mode. Tambahkan URL publik aplikasi dengan path `/api/payments/midtrans/notification` di pengaturan notifikasi Midtrans. Aplikasi memverifikasi tanda tangan notifikasi dan mengambil status dari API Midtrans. Nominal pesanan dan hasil konfirmasi diterapkan di server. Panel pemilik memperbarui data otomatis.
 
-Simpan database di volume persisten. Dataset ini berisi tanggal, posisi, dan selfie absensi yang harus dikelola sesuai kebijakan privasi tempat kerja. Karyawan memakai izin kamera dan lokasi yang diberikan browser, dan pemilik dapat meninjau bukti. Aplikasi ini belum menangani pengembalian dana dari gateway.
+Di **Pengaturan outlet**, pasang dan geser pin pada peta atau klik **Gunakan lokasi saya**, lalu atur radius absensi. Buat akun karyawan dari ruang kerja outlet tersebut. Saat absen, karyawan mengikuti instruksi kedip dan senyum, mengambil selfie bertanda waktu WIB, dan mengirim lokasi perangkat. Browser memproses gerakan wajah secara lokal. Server menyimpan selfie akhir, hasil verifikasi gerakan, waktu, dan lokasi serta memeriksa masa berlaku tantangan satu kali. Pemilik dapat meninjau selfie dan pin lokasi di **Absensi**.
 
+Di **Ringkasan**, pilih bulan dan klik **Atur target**. Pencapaian dihitung dari transaksi lunas pada bulan itu. Di **Produk**, masukkan biaya komponen untuk satu produk dan Kelola menjumlahkannya menjadi HPP. Di **Penjualan → Ekspor laporan**, pilih CSV, PDF, atau Excel untuk filter dan outlet yang sedang aktif.
+
+Simpan database di volume persisten. Tanggal, posisi, dan selfie absensi mengikuti kebijakan privasi tempat kerja. Aplikasi ini belum menangani pengembalian dana dari gateway.
+
+[Model MediaPipe Face Landmarker](https://developers.google.com/mediapipe/solutions/vision/face_landmarker)
 [Dokumentasi Midtrans Core API untuk QRIS](https://docs.midtrans.com/reference/qris)

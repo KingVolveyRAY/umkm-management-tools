@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
   ArrowDownRight, ArrowUpRight, Banknote, Bell, CalendarDays, Check, CircleAlert,
-  Clock3, Coffee, CreditCard, LoaderCircle, MapPin, QrCode, Sprout, X,
+  Clock3, Coffee, CreditCard, LoaderCircle, MapPin, QrCode, X,
 } from 'lucide-react';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -33,6 +33,7 @@ export const number = value => moneyFormatter.format(value ?? 0);
 export const dateLabel = (value, style = 'short') => (style === 'long' ? longFormatter : style === 'year' ? dateFormatter : shortFormatter).format(toDate(value));
 export const timeLabel = (value, seconds = false) => (seconds ? exactTimeFormatter : timeFormatter).format(toDate(value)).replaceAll('.', ':');
 export const today = () => dayFormatter.format(new Date());
+export const monthLabel = month => new Intl.DateTimeFormat('id-ID', { timeZone: zone, month: 'long', year: 'numeric' }).format(toDate(month + '-01'));
 export const shift = (value, days) => dayFormatter.format(new Date(toDate(value).getTime() + days * 86400000));
 export const initials = name => name.trim().split(/\s+/).slice(0, 2).map(word => word[0]?.toUpperCase()).join('');
 export const methodLabels = { cash: 'Tunai', qris_static: 'QRIS Statis', qris_dynamic: 'QRIS Dinamis' };
@@ -49,10 +50,21 @@ export function relativeTime(timestamp) {
   return dateLabel(timestamp);
 }
 
-export async function api(url, { method = 'GET', body, signal } = {}) {
+export const OutletContext = createContext(null);
+export const useOutletId = () => useContext(OutletContext);
+
+export function useOutletApi() {
+  const outletId = useOutletId();
+  return useCallback((url, options) => api(url, { ...options, outletId }), [outletId]);
+}
+
+export async function api(url, { method = 'GET', body, signal, outletId } = {}) {
   const response = await fetch('/api' + url, {
     method, signal,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers: {
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(outletId == null ? {} : { 'X-Kelola-Outlet': String(outletId) }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.headers.get('content-type')?.includes('application/json')) {
@@ -68,7 +80,10 @@ export async function api(url, { method = 'GET', body, signal } = {}) {
   return data;
 }
 
-export function useResource(url, interval = 0) {
+export function useResource(url, interval = 0, outletOverride) {
+  const contextOutlet = useOutletId();
+  const outletId = outletOverride ?? contextOutlet;
+  const key = (outletId ?? '') + ':' + url;
   const [result, setResult] = useState({ key: null, data: null, error: '' });
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -79,11 +94,11 @@ export function useResource(url, interval = 0) {
       if (pending) return;
       pending = true;
       try {
-        const data = await api(url, { signal: controller.signal });
-        if (!controller.signal.aborted) setResult({ key: url, data, error: '' });
+        const data = await api(url, { signal: controller.signal, outletId });
+        if (!controller.signal.aborted) setResult({ key, data, error: '' });
       } catch (error) {
         if (!controller.signal.aborted) setResult(previous => ({
-          key: url, data: previous.key === url ? previous.data : null, error: error.message,
+          key, data: previous.key === key ? previous.data : null, error: error.message,
         }));
       } finally {
         pending = false;
@@ -97,10 +112,10 @@ export function useResource(url, interval = 0) {
       clearInterval(timer);
       if (interval) window.removeEventListener('focus', load);
     };
-  }, [url, interval, revision]);
+  }, [url, outletId, key, interval, revision]);
   return {
-    data: result.key === url ? result.data : null,
-    error: result.key === url ? result.error : '',
+    data: result.key === key ? result.data : null,
+    error: result.key === key ? result.error : '',
     reload: () => setRevision(value => value + 1),
   };
 }
@@ -172,7 +187,7 @@ export function IconTile({ icon: Icon, color = 'green', className = '' }) {
 
 export function Brand() {
   return <div className="brand" aria-label="Kelola">
-    <span className="brand-mark"><Sprout size={23} strokeWidth={2} aria-hidden="true" /></span>
+    <img className="brand-mark" src="/kelola-icon.png" alt="" width="41" height="41" />
     <span>kelola<span className="brand-period">.</span></span>
   </div>;
 }

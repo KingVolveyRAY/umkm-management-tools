@@ -1,5 +1,5 @@
 import { Pool, types } from '@neondatabase/serverless';
-import { databaseSchema, initialRows, verifyMode } from './store.mjs';
+import { databaseSchema, initialRows, migrateFirstOutlet, outletIndexes, outletMigrationColumns, verifyMode } from './store.mjs';
 
 function sqliteConnection(raw) {
   return {
@@ -96,12 +96,21 @@ export async function openPostgres(connectionString, options) {
       await tx.run(databaseSchema(true));
       const existing = await tx.get('SELECT mode FROM store WHERE id = 1');
       verifyMode(existing, options.demo);
-      if (existing) return;
-
-      for (const [sql, args] of initialRows(options)) await tx.run(sql, args);
-      if (options.demo) {
-        await tx.run("SELECT setval(pg_get_serial_sequence('users','id'), (SELECT MAX(id) FROM users))");
-        await tx.run("SELECT setval(pg_get_serial_sequence('products','id'), (SELECT MAX(id) FROM products))");
+      if (!existing) {
+        for (const [sql, args] of initialRows(options)) await tx.run(sql, args);
+        if (options.demo) {
+          await tx.run("SELECT setval(pg_get_serial_sequence('users','id'), (SELECT MAX(id) FROM users))");
+          await tx.run("SELECT setval(pg_get_serial_sequence('products','id'), (SELECT MAX(id) FROM products))");
+        }
+      }
+      if (!await tx.get('SELECT version FROM schema_migrations WHERE version = 1')) {
+        await tx.run(migrateFirstOutlet);
+        await tx.run("SELECT setval(pg_get_serial_sequence('outlets','id'), (SELECT MAX(id) FROM outlets))");
+        for (const [table, column, definition] of outletMigrationColumns) {
+          await tx.run('ALTER TABLE ' + table + ' ADD COLUMN IF NOT EXISTS ' + column + ' ' + definition);
+        }
+        await tx.run(outletIndexes);
+        await tx.run('INSERT INTO schema_migrations VALUES (1)');
       }
     });
     return db;

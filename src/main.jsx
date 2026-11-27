@@ -7,20 +7,21 @@ import '@fontsource-variable/manrope';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
-  ArrowLeftRight, ArrowRight, Bell, Box, ChartNoAxesCombined, ChevronDown, ChevronRight, ChevronsUpDown,
-  Coffee, LayoutDashboard, LogOut, Menu, Settings, ShoppingCart, Users, X,
+  ArrowLeftRight, ArrowRight, Bell, Box, ChartNoAxesCombined, Check, ChevronDown, ChevronRight, ChevronsUpDown,
+  Coffee, LayoutDashboard, LogOut, Menu, Plus, Settings, ShoppingCart, Store, Users, X,
   CalendarCheck,
 } from 'lucide-react';
 import {
-  api, Avatar, Brand, Button, Dialog, ErrorText, NoticeList, Pending, ResourceState, Toast, useResource, useToast,
+  api, Avatar, Brand, Button, Dialog, ErrorText, NoticeList, OutletContext, Pending, ResourceState, Toast, useOutletApi, useResource, useToast,
 } from './common.jsx';
-import { AttendancePage, CatalogPage, Overview, SalesPage, SettingsPage } from './owner.jsx';
+import { AttendancePage, CatalogPage, OutletOverview, Overview, SalesPage, SettingsPage } from './owner.jsx';
 import { EmployeeAttendance, PointOfSale } from './employee.jsx';
 import './style.css';
 
 const ownerMenus = [
   { label: 'Ruang kerja', entries: [
     { id: 'ringkasan', label: 'Ringkasan', icon: LayoutDashboard },
+    { id: 'semua-outlet', label: 'Semua outlet', icon: Store },
     { id: 'penjualan', label: 'Penjualan', icon: ChartNoAxesCombined },
     { id: 'absensi', label: 'Absensi', icon: CalendarCheck },
   ] },
@@ -127,9 +128,16 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [noticesOpen, setNoticesOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [addingOutlet, setAddingOutlet] = useState(false);
+  const outlets = session.outlets;
+  const outletPreference = 'kelola:outlet:' + session.user.id;
+  const [preferredOutlet, setPreferredOutlet] = useState(() => Number(localStorage.getItem(outletPreference)));
+  const activeOutlet = isOwner ? outlets.find(entry => entry.id === preferredOutlet) ?? session.store : session.store;
+  const outletSession = { ...session, store: activeOutlet };
   const profile = useRef(null);
+  const outletMenu = useRef(null);
   const current = entries.find(entry => entry.id === hash) ?? entries[0];
-  const notices = useResource(isOwner ? '/owner/notices' : null, 8000);
+  const notices = useResource(isOwner ? '/owner/notices' : null, 8000, activeOutlet.id);
   const roleName = isOwner ? 'Pemilik' : 'Karyawan';
   const switchName = isOwner ? 'Panel karyawan' : 'Panel pemilik';
 
@@ -147,7 +155,7 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
     else window.scrollTo({ top: 0, behavior: 'instant' });
     const timer = requestAnimationFrame(() => ScrollTrigger.refresh());
     return () => cancelAnimationFrame(timer);
-  }, [current.id, lenis]);
+  }, [current.id, activeOutlet.id, lenis]);
   useEffect(() => {
     if (!profileOpen && !mobileOpen) return undefined;
     const dismiss = event => { if (!profile.current?.contains(event.target)) setProfileOpen(false); };
@@ -177,18 +185,35 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
     finally { setSwitching(false); }
   }
   function openNotices() { setNoticesOpen(true); notices.reload(); }
+  function selectOutlet(id, page) {
+    localStorage.setItem(outletPreference, String(id));
+    setPreferredOutlet(id);
+    setNoticesOpen(false);
+    if (outletMenu.current) outletMenu.current.open = false;
+    if (page) navigate(page);
+    else if (current.id === 'semua-outlet') navigate('ringkasan');
+    else setMobileOpen(false);
+  }
+  function addOutlet() {
+    if (outletMenu.current) outletMenu.current.open = false;
+    setMobileOpen(false);
+    setAddingOutlet(true);
+  }
   const switchRole = () => accountAction(() => demoAs(isOwner ? 'employee' : 'owner'));
 
   let content;
   switch (current.id) {
     case 'ringkasan':
-      content = <Overview session={session} navigate={navigate} openNotices={openNotices} />;
+      content = <Overview session={outletSession} navigate={navigate} openNotices={openNotices} />;
+      break;
+    case 'semua-outlet':
+      content = <OutletOverview onSelect={selectOutlet} onAdd={addOutlet} />;
       break;
     case 'penjualan':
       content = <SalesPage />;
       break;
     case 'absensi':
-      content = <AttendancePage session={session} />;
+      content = <AttendancePage session={outletSession} />;
       break;
     case 'produk':
       content = <CatalogPage notify={notify} />;
@@ -206,7 +231,7 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
       content = <PointOfSale session={session} notify={notify} />;
   }
 
-  return <div className="workspace">
+  return <OutletContext.Provider value={isOwner ? activeOutlet.id : null}><div className="workspace">
     <a className="skip-link" href="#main-content" onClick={event => {
       event.preventDefault();
       document.getElementById('main-content')?.focus();
@@ -217,11 +242,20 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
         <a href={'#' + entries[0].id} onClick={event => link(event, entries[0].id)}><Brand /></a>
         <button type="button" className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Tutup menu"><X size={20} /></button>
       </header>
-      {isOwner ? <button type="button" className="store-card" onClick={() => navigate('pengaturan')} aria-label="Pengaturan usaha dan outlet">
-        <span className="store-icon"><Coffee size={19} strokeWidth={1.75} /></span>
-        <span className="store-copy"><strong>{session.store.name}</strong><small>{session.store.outlet}</small></span>
-        <ChevronsUpDown size={15} className="store-chevron" />
-      </button> : <div className="store-card">
+      {isOwner ? <details className="outlet-picker" ref={outletMenu}>
+        <summary className="store-card" aria-label={'Pilih outlet, aktif ' + activeOutlet.name}>
+          <span className="store-icon"><Store size={19} strokeWidth={1.75} /></span>
+          <span className="store-copy"><strong>{activeOutlet.name}</strong><small>{activeOutlet.outlet}</small></span>
+          <ChevronsUpDown size={15} className="store-chevron" />
+        </summary>
+        <div className="outlet-options">
+          {outlets.map(outlet => <button type="button" key={outlet.id} className="outlet-option" onClick={() => selectOutlet(outlet.id)}>
+            <span className="store-copy"><strong>{outlet.name}</strong><small>{outlet.outlet}</small></span>
+            {outlet.id === activeOutlet.id && <Check size={16} aria-label="Aktif" />}
+          </button>)}
+          <button type="button" className="outlet-option outlet-add" onClick={addOutlet}><Plus size={17} />Tambah outlet</button>
+        </div>
+      </details> : <div className="store-card">
         <span className="store-icon"><Coffee size={19} strokeWidth={1.75} /></span>
         <span className="store-copy"><strong>{session.store.name}</strong><small>{session.store.outlet}</small></span>
       </div>}
@@ -264,13 +298,45 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
           </div>
         </div>
       </header>
-      <main id="main-content" className="main" tabIndex={-1} key={current.id}>{content}</main>
+      <main id="main-content" className="main" tabIndex={-1} key={current.id + ':' + activeOutlet.id}>{content}</main>
     </div>
     {noticesOpen && isOwner && <NoticeDialog notices={notices} onClose={() => setNoticesOpen(false)} />}
-  </div>;
+    {addingOutlet && <AddOutlet close={() => setAddingOutlet(false)} onCreated={next => {
+      updateSession(next);
+      setAddingOutlet(false);
+      selectOutlet(next.store.id, 'pengaturan');
+      notify('Outlet berhasil ditambahkan.');
+    }} />}
+  </div></OutletContext.Provider>;
+}
+
+function AddOutlet({ close, onCreated }) {
+  const scopedApi = useOutletApi();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return <Dialog title="Tambah outlet" description="Buat ruang kerja untuk usaha atau cabang baru." onClose={close} busy={busy}>
+    <form className="form" onSubmit={async event => {
+      event.preventDefault();
+      const body = Object.fromEntries(new FormData(event.currentTarget));
+      setError('');
+      setBusy(true);
+      try { onCreated(await scopedApi('/owner/outlets', { method: 'POST', body })); }
+      catch (problem) { setError(problem.message); }
+      finally { setBusy(false); }
+    }}>
+      <label>Nama usaha<input autoFocus required name="name" maxLength={70} placeholder="Misalnya Nasi Goreng Nusantara" /></label>
+      <label>Nama outlet<input required name="outlet" maxLength={70} placeholder="Misalnya Cabang Cikini" /></label>
+      <ErrorText text={error} />
+      <div className="dialog-actions">
+        <Button onClick={close} disabled={busy}>Batal</Button>
+        <Button kind="primary" icon={Plus} type="submit" disabled={busy}>{busy ? 'Menyimpan…' : 'Buat outlet'}</Button>
+      </div>
+    </form>
+  </Dialog>;
 }
 
 function NoticeDialog({ notices, onClose }) {
+  const scopedApi = useOutletApi();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return <Dialog title="Notifikasi" description={notices.data?.count ? notices.data.count + ' belum dibaca' : 'Aktivitas penjualan dan absensi'} onClose={onClose}>
@@ -280,7 +346,7 @@ function NoticeDialog({ notices, onClose }) {
       <Button disabled={busy || !notices.data?.count} onClick={async () => {
         setBusy(true);
         setError('');
-        try { await api('/owner/notices/read', { method: 'POST', body: {} }); notices.reload(); }
+        try { await scopedApi('/owner/notices/read', { method: 'POST', body: {} }); notices.reload(); }
         catch (problem) { setError(problem.message); }
         finally { setBusy(false); }
       }}>Tandai semua dibaca</Button>
