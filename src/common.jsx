@@ -72,7 +72,7 @@ export async function api(url, { method = 'GET', body, signal, outletId } = {}) 
   }
   const data = await response.json();
   if (!response.ok) {
-    if (response.status === 401 && !['/login', '/demo'].includes(url)) {
+    if (response.status === 401 && url !== '/login') {
       window.dispatchEvent(new Event('kelola:expired'));
     }
     throw Object.assign(new Error(data.error || 'Permintaan tidak berhasil.'), { code: data.code });

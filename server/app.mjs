@@ -46,7 +46,7 @@ function matchesChallenge(proof, challenge, now) {
   return true;
 }
 
-export function createApp(database, { demo, gateway = null, secureCookie = false, trustProxy = false, addressLookup = searchAddress } = {}) {
+export function createApp(database, { gateway = null, secureCookie = false, trustProxy = false, addressLookup = searchAddress } = {}) {
   const app = express();
   const db = useDatabase(database);
   app.disable('x-powered-by');
@@ -92,16 +92,16 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   }
 
   async function sessionInfo(user, outletId = user?.outlet_id) {
-    if (!user) return { user: null, demo };
+    if (!user) return { user: null };
     const [settings, outlets] = await Promise.all([
       store(outletId),
       user.role === 'owner' ? db.all('SELECT id,name,outlet,radius,latitude,longitude FROM outlets ORDER BY id') : null,
     ]);
     return {
-      user: safeUser(user), demo,
+      user: safeUser(user),
       store: publicOutlet(settings),
       outlets: outlets ? outlets.map(publicOutlet) : [publicOutlet(settings)],
-      payments: { static: !!settings.static_qris || demo, dynamic: !!gateway || demo, sandbox: !!gateway && !gateway.production },
+      payments: { static: !!settings.static_qris, dynamic: !!gateway, sandbox: !!gateway && !gateway.production },
     };
   }
 
@@ -135,14 +135,6 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
   }, express.json({ limit: '1550kb' }));
 
   app.get('/api/session', async (req, res) => res.json(await sessionInfo(await activeSession(req))));
-  app.post('/api/demo', async (req, res) => {
-    if (!demo) fail(404, 'Mode demo tidak aktif.');
-    const role = req.body?.role;
-    if (!['owner', 'employee'].includes(role)) fail(400, 'Panel tidak dikenal.');
-    const user = await db.get('SELECT * FROM users WHERE id = ? AND role = ? AND active = 1', [role === 'owner' ? 1 : 2, role]);
-    if (!user) fail(404, 'Akun demo tidak aktif.');
-    return startSession(req, res, user);
-  });
 
   // Compare against a real hash even when the username is unknown.
   const dummyHash = hashPassword(randomBytes(24).toString('hex'));
@@ -522,7 +514,7 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
     const settings = req.outlet;
     res.json({
       name: settings.name, outlet: settings.outlet, latitude: settings.latitude, longitude: settings.longitude, address: settings.address,
-      radius: settings.radius, staticQris: settings.static_qris ?? '', dynamic: demo ? 'demo' : gateway?.production ? 'live' : gateway ? 'sandbox' : 'off',
+      radius: settings.radius, staticQris: settings.static_qris ?? '', dynamic: gateway?.production ? 'live' : gateway ? 'sandbox' : 'off',
     });
   });
 
@@ -560,7 +552,7 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
       const title = sale.amount === 0 ? 'Transaksi promo gratis tercatat'
         : sale.method === 'cash' ? 'Penjualan tunai tercatat'
         : sale.provider === 'merchant' ? 'QRIS statis dikonfirmasi kasir'
-        : sale.provider === 'demo' ? 'Pembayaran QRIS demo tercatat' : 'Pembayaran QRIS diterima';
+        : 'Pembayaran QRIS diterima';
       const cashier = await tx.get('SELECT name FROM users WHERE id = ?', [sale.employee_id]);
       await addNotice(tx, sale.outlet_id, 'sale', title, cashier.name + ' • ' + rupiah(sale.amount));
     }
@@ -650,17 +642,14 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
       }
       if (!amount && method !== 'cash') fail(400, 'Catat transaksi gratis tanpa QRIS.');
       const settings = await store(req.outlet.id, tx);
-      if (method === 'qris_static' && !demo && !settings.static_qris) fail(409, 'QRIS statis belum diatur oleh pemilik.');
-      if (method === 'qris_dynamic' && !demo && !gateway) fail(409, 'Payment gateway QRIS dinamis belum diatur.');
+      if (method === 'qris_static' && !settings.static_qris) fail(409, 'QRIS statis belum diatur oleh pemilik.');
+      if (method === 'qris_dynamic' && !gateway) fail(409, 'Payment gateway QRIS dinamis belum diatur.');
       if (method === 'cash' && (!Number.isSafeInteger(cashReceived) || cashReceived < amount || cashReceived > 1000000000)) {
         fail(400, 'Uang diterima harus mencukupi total transaksi.');
       }
       const id = 'KL-' + randomBytes(6).toString('hex').toUpperCase();
-      const provider = method === 'cash' ? 'cashier'
-        : method === 'qris_static' ? settings.static_qris ? 'merchant' : 'demo'
-        : gateway ? 'midtrans' : 'demo';
-      const qr = method === 'qris_static' && settings.static_qris ? settings.static_qris
-        : method !== 'cash' && provider === 'demo' ? 'KELOLA DEMO • ' + id : null;
+      const provider = method === 'cash' ? 'cashier' : method === 'qris_static' ? 'merchant' : 'midtrans';
+      const qr = method === 'qris_static' ? settings.static_qris : null;
       const contact = await rememberCustomer(tx, req.outlet.id, customer, timestamp, id);
       const created = await tx.get(`
         INSERT INTO sales (id,request_id,employee_id,outlet_id,method,status,provider,items,amount,cash_received,qr_value,created_at,
@@ -739,11 +728,11 @@ export function createApp(database, { demo, gateway = null, secureCookie = false
 
   app.post('/api/sales/:id/confirm', employee, async (req, res) => {
     const sale = await employeeSale(req);
-    if (sale.method === 'cash' || sale.provider === 'midtrans' || (sale.provider === 'demo' && !demo)) {
+    if (sale.method === 'cash' || sale.provider !== 'merchant') {
       fail(403, 'Status transaksi ini ditetapkan oleh metode pembayaran.');
     }
     if (sale.status === 'failed') fail(409, 'Transaksi sudah berakhir.');
-    await db.transaction(tx => settle(tx, sale, sale.provider === 'demo' ? 'demo_settlement' : 'merchant_confirmed'));
+    await db.transaction(tx => settle(tx, sale, 'merchant_confirmed'));
     res.json(publicSale(await saleById(sale.id)));
   });
 

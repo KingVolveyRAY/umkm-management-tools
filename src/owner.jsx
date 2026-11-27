@@ -499,7 +499,7 @@ function SettingsForm({ defaults, updateSession, notify }) {
     setForm(prev => ({ ...prev, latitude: Number(latitude.toFixed(6)), longitude: Number(longitude.toFixed(6)), address }));
     setMatches(null);
   }
-  const labels = { demo: 'Mode demo', sandbox: 'Midtrans sandbox', live: 'Midtrans aktif', off: 'Belum terhubung' };
+  const labels = { sandbox: 'Midtrans sandbox', live: 'Midtrans aktif', off: 'Belum terhubung' };
   async function findAddress() {
     const query = addressQuery.trim();
     if (searching || query.length < 3) return;

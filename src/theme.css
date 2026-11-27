@@ -58,7 +58,7 @@
     box-shadow: 5px 0 18px #070c0a65;
   }
   [data-theme="dark"] .topbar { background: #17231fec; border-color: var(--line); }
-  [data-theme="dark"] :is(.card, .store-card, .demo-block) {
+  [data-theme="dark"] :is(.card, .store-card) {
     background: linear-gradient(155deg, var(--raised), var(--surface) 80%);
     border-color: var(--line);
   }
@@ -71,7 +71,7 @@
 
   [data-theme="dark"] :is(.brand, .breadcrumbs strong, .page-heading h1, .amount-cell, .person-cell strong,
     .receipt-meta strong, .receipt-items strong, .attendance-record strong, .gps-card strong) { color: var(--ink); }
-  [data-theme="dark"] :is(.nav-item, .sidebar-role, .profile-menu button, .icon-button, .demo-block > span, .nav-group h2,
+  [data-theme="dark"] :is(.nav-item, .sidebar-role, .profile-menu button, .icon-button, .nav-group h2,
     .metric-label, .metric-foot, .panel-header p, .chart-legend, .chart-x, .chart-y, .notice-copy span, .notice-time, table,
     .product-copy span, .payment-summary span, .payment-option > small, .cash-line span, .clock-location, .capture-placeholder,
     .time-chip, .map-link, .form label, .filters label) { color: var(--muted); }
@@ -82,13 +82,13 @@
   [data-theme="dark"] :is(.negative-value, .amount-cell.negative-value) { color: var(--red-ink); }
 
   [data-theme="dark"] :is(.nav-item:hover, .profile-menu button:hover, .icon-button:not(:disabled):hover, .outlet-option:hover,
-    .export-options a:hover, .address-results button:hover, .demo-block button:hover, .stepper button:hover,
+    .export-options a:hover, .address-results button:hover, .stepper button:hover,
     .history-row:hover, .welcome-action.button:hover) { background: var(--hover); color: var(--deep); }
-  [data-theme="dark"] :is(.nav-item.current, .nav-item.current:hover, .demo-block button, .outlet-add) {
+  [data-theme="dark"] :is(.nav-item.current, .nav-item.current:hover, .outlet-add) {
     background: var(--green-tint); color: var(--deep);
   }
   [data-theme="dark"] .nav-item.current { box-shadow: inset 0 1px 3px #a5d1b331, 0 3px 8px #090e0d3d; }
-  [data-theme="dark"] :is(.nav-item.current:hover, .demo-block button:hover, .outlet-add:hover) { background: #305440; }
+  [data-theme="dark"] :is(.nav-item.current:hover, .outlet-add:hover) { background: #305440; }
 
   [data-theme="dark"] :is(.button-secondary, .panel-icon, .bell-button, .category-button, .payment-option, .stepper button) {
     background: var(--raised); color: var(--ink); border-color: var(--line); box-shadow: var(--clay-shadow);
@@ -104,6 +104,24 @@
     box-shadow: 0 4px 9px #0a1510a3, inset 0 2px 5px #d6f0df58, inset 0 -4px 6px #345e4533;
   }
   [data-theme="dark"] .button-primary:not(:disabled):hover { background: #a1daba; border-color: #b6e7c9; }
+  [data-theme="dark"] .attendance-direct-button.attendance-direct-in {
+    background: linear-gradient(155deg, #95d3b1, #7bc09b); color: #13271c; border-color: #a4d9bb;
+    box-shadow: 0 6px 14px #0a1510a3, inset 0 2px 5px #e1f5e866, inset 0 -4px 6px #345e4538;
+  }
+  [data-theme="dark"] .attendance-direct-button.attendance-direct-in:not(:disabled):hover {
+    background: linear-gradient(155deg, #a7dfc0, #8eceab); border-color: #b6e7c9;
+  }
+  [data-theme="dark"] .attendance-direct-button.attendance-direct-out {
+    background: linear-gradient(155deg, #e7be84, #d2a467); color: #24190c; border-color: #f0cc97;
+    box-shadow: 0 6px 14px #0a1510a3, inset 0 2px 5px #fff0d76e, inset 0 -4px 6px #6b491c40;
+  }
+  [data-theme="dark"] .attendance-direct-button.attendance-direct-out:not(:disabled):hover {
+    color: #24190c; background: linear-gradient(155deg, #f0cb95, #ddb175); border-color: #f6d9ab;
+  }
+  [data-theme="dark"] .attendance-direct-button.attendance-direct-done:disabled {
+    color: var(--deep); background: linear-gradient(155deg, #2d5141, var(--green-tint)); border-color: #578b6e;
+    box-shadow: var(--clay-shadow);
+  }
   [data-theme="dark"] .bell-button i { border-color: var(--raised); }
 
   [data-theme="dark"] :is(.welcome-banner, .login-brand, .clock-panel) { background: linear-gradient(125deg, #243f33, #282836); border-color: #465c51; color: var(--ink); box-shadow: var(--clay-shadow); }

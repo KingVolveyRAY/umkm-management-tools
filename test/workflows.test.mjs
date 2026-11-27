@@ -12,8 +12,15 @@ import { createApp } from '../server/app.mjs';
 import { midtransGateway, validStaticQris } from '../server/qris.mjs';
 import { databaseSchema, initialRows, localDay, openStore } from '../server/store.mjs';
 
-async function serve(t, { demo = true, gateway, addressLookup, db = openStore(':memory:', { demo }) } = {}) {
-  const server = createApp(db, { demo, gateway, addressLookup }).listen(0, '127.0.0.1');
+const ownerCredentials = { username: 'pemilik', password: 'example-only-owner-password' };
+const staffCredentials = { username: 'naya', password: 'example-only-staff-password' };
+
+async function serve(t, {
+  gateway,
+  addressLookup,
+  db = openStore(':memory:', { ownerUsername: ownerCredentials.username, ownerPassword: ownerCredentials.password }),
+} = {}) {
+  const server = createApp(db, { gateway, addressLookup }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
@@ -37,7 +44,15 @@ async function serve(t, { demo = true, gateway, addressLookup, db = openStore(':
   };
 }
 
-const basket = [{ id: 1, quantity: 2 }];
+async function setupStaffAndProduct(owner, staff, { price = 28000 } = {}) {
+  assert.equal((await owner('/login', ownerCredentials)).status, 200);
+  assert.equal((await owner('/owner/employees', { name: 'Naya Putri', ...staffCredentials })).status, 201);
+  const product = await owner('/owner/products', { name: 'Kopi Susu Gula Aren', category: 'Kopi', price });
+  assert.equal(product.status, 201);
+  assert.equal((await staff('/login', staffCredentials)).status, 200);
+  return product.data.id;
+}
+
 const customer = { name: 'Pelanggan Uji' };
 const staticPayload = '00020101021126160012ID.TEST.QRIS5204581253033605802ID5910KOPI SUDUT6007JAKARTA630444B6';
 
@@ -47,13 +62,14 @@ async function challengeProof(staff, kind) {
   return { id: data.id, steps: data.steps.map((action, index) => ({ action, elapsed: 300 * (index + 1) })) };
 }
 
-test('cash, static QRIS, and simulated dynamic QRIS update owner reports once each', async t => {
+test('cash and static QRIS update owner reports once each, and unconfigured dynamic QRIS is rejected', async t => {
   const client = await serve(t);
   const owner = client();
   const cashier = client();
   assert.equal((await owner('/owner/overview')).status, 401);
-  assert.equal((await owner('/demo', { role: 'owner' })).status, 200);
-  assert.equal((await cashier('/demo', { role: 'employee' })).status, 200);
+  assert.equal((await owner('/demo', { role: 'owner' })).status, 404);
+  const productId = await setupStaffAndProduct(owner, cashier);
+  const basket = [{ id: productId, quantity: 2 }];
   assert.equal((await cashier('/owner/overview')).status, 403);
   const baseline = (await owner('/owner/overview')).data.current;
 
@@ -67,40 +83,37 @@ test('cash, static QRIS, and simulated dynamic QRIS update owner reports once ea
   assert.equal((await cashier('/sales', cash)).data.id, first.data.id);
   assert.equal((await cashier('/sales', { ...cash, cashReceived: 70000 })).status, 409);
   assert.equal((await owner('/sales', cash)).status, 403);
+  assert.equal((await cashier('/sales', { method: 'qris_dynamic', requestId: randomUUID(), items: basket, customer })).status, 409);
 
   assert.equal(validStaticQris(staticPayload), true);
   assert.equal(validStaticQris(staticPayload.slice(0, -1) + '9'), false);
   const settings = (await owner('/owner/settings')).data;
   assert.equal((await owner('/owner/settings', { ...settings, staticQris: 'invalid' }, 'PUT')).status, 400);
   assert.equal((await owner('/owner/settings', { ...settings, staticQris: staticPayload }, 'PUT')).status, 200);
-  for (const [method, provider] of [['qris_static', 'merchant'], ['qris_dynamic', 'demo']]) {
-    const result = await cashier('/sales', { method, requestId: randomUUID(), items: basket, customer });
-    const order = result.data;
-    assert.equal(result.status, 201);
-    assert.equal(order.status, 'pending');
-    assert.equal(order.provider, provider);
-    const qr = await cashier('/sales/' + order.id + '/qr');
-    assert.equal(qr.type, 'image/png');
-    assert.equal(qr.data.subarray(1, 4).toString('ascii'), 'PNG');
-    assert.equal((await cashier('/sales/' + order.id + '/confirm', {})).data.status, 'paid');
-    assert.equal((await cashier('/sales/' + order.id + '/confirm', {})).data.status, 'paid');
-  }
+  const result = await cashier('/sales', { method: 'qris_static', requestId: randomUUID(), items: basket, customer });
+  const order = result.data;
+  assert.equal(result.status, 201);
+  assert.equal(order.status, 'pending');
+  assert.equal(order.provider, 'merchant');
+  const qr = await cashier('/sales/' + order.id + '/qr');
+  assert.equal(qr.type, 'image/png');
+  assert.equal(qr.data.subarray(1, 4).toString('ascii'), 'PNG');
+  assert.equal((await cashier('/sales/' + order.id + '/confirm', {})).data.status, 'paid');
+  assert.equal((await cashier('/sales/' + order.id + '/confirm', {})).data.status, 'paid');
 
   const summary = (await owner('/owner/overview')).data.current;
-  assert.equal(summary.revenue - baseline.revenue, 168000);
-  assert.equal(summary.count - baseline.count, 3);
+  assert.equal(summary.revenue - baseline.revenue, 112000);
+  assert.equal(summary.count - baseline.count, 2);
   const notices = (await owner('/owner/notices')).data;
-  assert.equal(notices.count, 7);
+  assert.equal(notices.count, 2);
   assert.ok(notices.rows.some(row => row.title === 'QRIS statis dikonfirmasi kasir'));
-  const sales = await owner('/owner/sales?format=csv&method=qris_dynamic');
+  const sales = await owner('/owner/sales?format=csv&method=qris_static');
   assert.match(sales.type, /text\/csv/);
-  assert.match(sales.data.toString(), /qris_dynamic/);
-  assert.doesNotMatch(sales.data.toString(), /qris_static/);
+  assert.match(sales.data.toString(), /qris_static/);
+  assert.doesNotMatch(sales.data.toString(), /cash/);
 });
 
 test('operational payment uses the gateway for settlement and verifies signed notifications', async t => {
-  const demo = false;
-  const db = openStore(':memory:', { demo, ownerUsername: 'pemilik', ownerPassword: 'example-only-owner-password' });
   const key = 'test-signing-key';
   const origin = 'https://api.sandbox.midtrans.com';
   let amount;
@@ -136,15 +149,14 @@ test('operational payment uses the gateway for settlement and verifies signed no
   assert.equal(gateway.qr({
     actions: [{ name: 'generate-qr-code-v2', url: origin + '/v4/qris/new-format/qr-code' }],
   }).url, origin + '/v4/qris/new-format/qr-code');
-  const client = await serve(t, { demo, gateway, db });
+  const client = await serve(t, { gateway });
   const owner = client();
   const cashier = client();
   assert.equal((await owner('/demo', { role: 'owner' })).status, 404);
-  assert.equal((await owner('/login', { username: 'pemilik', password: 'example-only-owner-password' })).status, 200);
-  assert.equal((await owner('/owner/employees', { name: 'Kasir Satu', username: 'kasir1', password: 'example-only-staff-password' })).status, 201);
-  assert.equal((await owner('/owner/products', { name: 'Kopi', category: 'Minuman', price: 12000 })).status, 201);
-  assert.equal((await cashier('/login', { username: 'kasir1', password: 'example-only-staff-password' })).status, 200);
-  const order = (await cashier('/sales', { method: 'qris_dynamic', requestId: randomUUID(), items: basket, customer })).data;
+  const productId = await setupStaffAndProduct(owner, cashier, { price: 12000 });
+  const order = (await cashier('/sales', {
+    method: 'qris_dynamic', requestId: randomUUID(), items: [{ id: productId, quantity: 2 }], customer,
+  })).data;
   assert.equal(order.status, 'pending');
   assert.equal(order.qr, true);
   assert.equal(amount, 24000);
@@ -170,8 +182,11 @@ test('attendance requires a selfie and one-use liveness challenge, and preserves
   const client = await serve(t);
   const owner = client();
   const staff = client();
-  await owner('/demo', { role: 'owner' });
-  await staff('/demo', { role: 'employee' });
+  await setupStaffAndProduct(owner, staff);
+  const settings = (await owner('/owner/settings')).data;
+  assert.equal((await owner('/owner/settings', {
+    ...settings, latitude: -6.2608, longitude: 106.8106, radius: 150,
+  }, 'PUT')).status, 200);
   const location = { latitude: -6.2, longitude: 106.81, accuracy: 12 };
   assert.equal((await staff('/attendance', { ...location, kind: 'in' })).status, 400);
   const image = jpeg.encode({ data: Buffer.alloc(16 * 16 * 4, 255), width: 16, height: 16 }, 80).data;
@@ -204,7 +219,8 @@ test('owners can manage another outlet and export scoped sales, and staff stay i
   const client = await serve(t);
   const owner = client();
   const staff = client();
-  await owner('/demo', { role: 'owner' });
+  assert.equal((await owner('/login', ownerCredentials)).status, 200);
+  const firstProduct = (await owner('/owner/products', { name: 'Kopi Utama', category: 'Kopi', price: 20000 })).data.id;
   const baseline = (await owner('/owner/overview')).data.current;
   const created = await owner('/owner/outlets', { name: 'Nasi Goreng Nusantara', outlet: 'Cikini' });
   assert.equal(created.status, 201);
@@ -226,15 +242,15 @@ test('owners can manage another outlet and export scoped sales, and staff stay i
   assert.equal((await owner('/products' + scope)).data.rows[0].costTotal, 8500);
 
   const account = await owner('/owner/employees' + scope, {
-    name: 'Kasir Cikini', username: 'kasir-cikini', password: 'kasir-demo-123456',
+    name: 'Kasir Cikini', username: 'kasir-cikini', password: 'kasir-cikini-123456',
   });
   assert.equal(account.status, 201);
-  assert.equal((await staff('/login', { username: 'kasir-cikini', password: 'kasir-demo-123456' })).data.store.id, outletId);
+  assert.equal((await staff('/login', { username: 'kasir-cikini', password: 'kasir-cikini-123456' })).data.store.id, outletId);
   const catalog = await staff('/products?outletId=1');
   assert.equal(catalog.data.rows.length, 1);
   assert.equal(catalog.data.rows[0].id, productId);
   assert.equal('costTotal' in catalog.data.rows[0], false);
-  const checkout = { method: 'cash', requestId: randomUUID(), items: basket, cashReceived: 55000, customer };
+  const checkout = { method: 'cash', requestId: randomUUID(), items: [{ id: firstProduct, quantity: 1 }], cashReceived: 55000, customer };
   assert.equal((await staff('/sales', checkout)).status, 409);
   const sale = await staff('/sales', { ...checkout, items: [{ id: productId, quantity: 2 }] });
   assert.equal(sale.data.status, 'paid');
@@ -271,8 +287,7 @@ test('POS applies the best scheduled promotion, stores customer contacts, and sn
   const client = await serve(t);
   const owner = client();
   const staff = client();
-  await owner('/demo', { role: 'owner' });
-  await staff('/demo', { role: 'employee' });
+  await setupStaffAndProduct(owner, staff);
   const product = (await owner('/products')).data.rows[0];
   const one = [{ id: product.id, quantity: 1 }];
   assert.equal((await owner('/owner/products/' + product.id, {
@@ -335,7 +350,7 @@ test('POS applies the best scheduled promotion, stores customer contacts, and sn
   assert.equal(report.coveredRevenue, 21000);
   assert.equal(report.hpp, 48000);
   assert.equal(report.gross, -27000);
-  assert.ok(report.missing > 0);
+  assert.equal(report.missing, 0);
 
   assert.equal((await staff('/sales', { ...freeRequest, requestId: randomUUID() })).status, 201);
   const names = (await owner('/owner/customers?q=Tamu')).data.rows;
@@ -352,8 +367,7 @@ test('owner can look up an address, save the pin label, and change the pin using
   } });
   const owner = client();
   const cashier = client();
-  await owner('/demo', { role: 'owner' });
-  await cashier('/demo', { role: 'employee' });
+  await setupStaffAndProduct(owner, cashier);
   assert.equal((await cashier('/owner/address-search?q=Monas%20Jakarta')).status, 403);
   assert.deepEqual((await owner('/owner/address-search?q=Monas%20Jakarta')).data.rows, [match]);
   const settings = (await owner('/owner/settings')).data;
@@ -366,20 +380,20 @@ test('owner can look up an address, save the pin label, and change the pin using
   assert.equal((await owner('/owner/settings')).data.address, '');
 });
 
-test('the operational database retains users and rejects opening under demo mode', async () => {
+test('the operational database retains users and rejects legacy demo databases', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'kelola-test-'));
   const path = join(folder, 'live.sqlite');
+  const legacyDemoPath = join(folder, 'legacy-demo.sqlite');
   try {
     const legacy = new DatabaseSync(path);
     legacy.exec(databaseSchema());
-    for (const [sql, args] of initialRows({ demo: false, ownerUsername: 'pemilik', ownerPassword: 'test-password-1234' })) {
+    for (const [sql, args] of initialRows({ ownerUsername: 'pemilik', ownerPassword: 'test-password-1234' })) {
       legacy.prepare(sql).run(...args);
     }
     legacy.prepare('UPDATE store SET name=?,latitude=?,longitude=? WHERE id=1').run('Usaha lama', -6.2, 106.8);
     legacy.prepare('INSERT INTO products (name,category,price) VALUES (?,?,?)').run('Produk lama', 'Makanan', 10000);
     legacy.close();
-    assert.throws(() => openStore(path, { demo: true }), /berbeda/);
-    const reopened = openStore(path, { demo: false });
+    const reopened = openStore(path, { ownerUsername: 'pemilik', ownerPassword: 'test-password-1234' });
     try {
       assert.equal(reopened.prepare('SELECT username FROM users WHERE role = ?').get('owner').username, 'pemilik');
       assert.equal(reopened.prepare('SELECT name FROM outlets WHERE id = 1').get().name, 'Usaha lama');
@@ -389,6 +403,12 @@ test('the operational database retains users and rejects opening under demo mode
     } finally {
       reopened.close();
     }
+
+    const legacyDemo = new DatabaseSync(legacyDemoPath);
+    legacyDemo.exec(databaseSchema());
+    legacyDemo.prepare("INSERT INTO store (id,name,outlet,mode) VALUES (1,'Demo','Outlet','demo')").run();
+    legacyDemo.close();
+    assert.throws(() => openStore(legacyDemoPath, { ownerUsername: 'pemilik', ownerPassword: 'test-password-1234' }), /demo/i);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }

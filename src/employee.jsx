@@ -12,13 +12,49 @@ import {
 import { livenessLabels } from './liveness.js';
 import { useFaceVerification } from './use-face-verification.js';
 import { drawCameraFrame } from './camera-frame.js';
+import { directAttendanceAction, resolveTodayAttendance } from './attendance-state.js';
 
 const productIcon = category => /makanan|roti|snack/i.test(category) ? [Croissant, 'amber']
   : /^(non|minum)/i.test(category) ? [CupSoda, 'purple'] : [Coffee, 'green'];
 
+function useTodayAttendance(notify) {
+  const { data, error, reload } = useResource('/attendance', 12000);
+  const [dialog, setDialog] = useState(null);
+  const [updated, setUpdated] = useState(null);
+  const { ready, records, arrival, departure } = resolveTodayAttendance(data, updated, today());
+  function complete(result) {
+    const submittedKind = dialog;
+    setUpdated(result);
+    setDialog(null);
+    reload();
+    notify(submittedKind === 'in' ? 'Absen masuk berhasil dicatat.' : submittedKind === 'out' ? 'Absen pulang berhasil dicatat.' : 'Absensi berhasil dicatat.');
+  }
+  return { data, error, reload, ready, records, arrival, departure, dialog, setDialog, complete };
+}
+
+function DirectAttendanceButton({ attendance, venueConfigured }) {
+  const action = directAttendanceAction({
+    ready: attendance.ready,
+    arrival: attendance.arrival,
+    departure: attendance.departure,
+    venueConfigured,
+    error: attendance.error,
+  });
+  const Icon = action.done ? Check : action.kind === 'out' ? LogOut : LogIn;
+  return <Button
+    icon={Icon}
+    kind={!action.done && action.kind === 'in' ? 'primary' : 'secondary'}
+    className={'attendance-direct-button attendance-direct-' + action.variant}
+    disabled={action.disabled}
+    title={action.title}
+    onClick={() => attendance.setDialog(action.kind)}
+  >{action.label}</Button>;
+}
+
 export function PointOfSale({ session, notify }) {
   const { data, error, reload } = useResource('/products', 18000);
   const history = useResource('/sales');
+  const attendance = useTodayAttendance(notify);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [cart, setCart] = useState({});
@@ -43,6 +79,7 @@ export function PointOfSale({ session, notify }) {
   return <>
     <SectionHeading title="Kasir" description="Pilih produk, buat transaksi, dan terima pembayaran di outlet.">
       <Button icon={History} onClick={() => { history.reload(); setShowHistory(true); }}>Riwayat kasir</Button>
+      <DirectAttendanceButton attendance={attendance} venueConfigured={session.store.venueConfigured} />
       {!!count && <Button className="cart-jump" icon={ShoppingBag} onClick={() => cartRef.current?.focus()}>Keranjang ({count})</Button>}
     </SectionHeading>
     <div className="pos-layout">
@@ -105,6 +142,7 @@ export function PointOfSale({ session, notify }) {
       close={() => { setPayment(null); history.reload(); }} notify={notify}
       onCreated={() => { setCart({}); history.reload(); }} />}
     {receipt && <Receipt sale={receipt} onClose={() => setReceipt(null)} />}
+    {attendance.dialog && <CaptureAttendance kind={attendance.dialog} session={session} close={() => attendance.setDialog(null)} complete={attendance.complete} />}
   </>;
 }
 
@@ -210,29 +248,26 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
     <div className="dialog-actions"><Button kind="primary" onClick={close}>Tutup</Button></div>
   </Dialog>;
   if (sale) {
-    const demo = sale.provider === 'demo';
-    const manual = sale.provider === 'merchant';
     return <Dialog title={methodLabels[sale.method]} description={sale.id} onClose={close} busy={busy}>
       <PriceBreakdown sale={sale} />
       <div className="qr-box">
-        {sale.qr && !imageError ? <img src={'/api/sales/' + sale.id + '/qr?v=' + qrVersion} alt={demo ? 'Kode QR simulasi' : 'Kode QRIS transaksi'}
+        {sale.qr && !imageError ? <img src={'/api/sales/' + sale.id + '/qr?v=' + qrVersion} alt="Kode QRIS transaksi"
           onError={() => setImageError(true)} /> : <span><QrCode size={36} /><small>{imageError ? 'QR belum bisa dimuat' : 'QR belum tersedia'}</small></span>}
       </div>
       <div className="qr-note">
-        <Badge color={demo || session.payments.sandbox && !manual ? 'purple' : 'amber'}>
-          {demo ? 'Simulasi' : session.payments.sandbox && !manual ? 'Sandbox' : 'Menunggu pembayaran'}
+        <Badge color={session.payments.sandbox && sale.provider !== 'merchant' ? 'purple' : 'amber'}>
+          {session.payments.sandbox && sale.provider !== 'merchant' ? 'Sandbox' : 'Menunggu pembayaran'}
         </Badge>
-        <p>{demo ? 'Kode ini untuk pengujian alur kasir dan tidak menerima dana.'
-          : manual ? 'Minta pelanggan memasukkan nominal di aplikasi pembayaran. Pastikan dana sesuai sebelum mengonfirmasi.'
+        <p>{sale.provider === 'merchant' ? 'Minta pelanggan memasukkan nominal di aplikasi pembayaran. Pastikan dana sesuai sebelum mengonfirmasi.'
           : session.payments.sandbox ? 'Uji transaksi dengan fasilitas sandbox Midtrans.'
           : 'Minta pelanggan memindai. Status diperbarui setelah Midtrans mengonfirmasi pembayaran.'}</p>
       </div>
       <ErrorText text={error || (sale.paymentCheckUnavailable ? 'Pemeriksaan gateway sedang tertunda. Anda dapat mencoba lagi pada transaksi ini.' : '')} />
       <div className="dialog-actions">
         {sale.qr && imageError && <Button icon={RefreshCw} onClick={() => { setQrVersion(value => value + 1); setImageError(false); }}>Muat ulang QR</Button>}
-        {demo || manual
+        {sale.provider === 'merchant'
           ? <Button kind="primary" icon={Check} disabled={busy} onClick={() => perform(() => api('/sales/' + sale.id + '/confirm', { method: 'POST', body: {} }))}>
-            {busy ? 'Memproses…' : demo ? 'Simulasikan pembayaran' : 'Dana sudah diterima'}
+            {busy ? 'Memproses…' : 'Dana sudah diterima'}
           </Button>
           : <Button kind="primary" icon={RefreshCw} disabled={busy} onClick={() => perform(() => api('/sales/' + sale.id + (sale.qr ? '' : '/retry'),
             sale.qr ? undefined : { method: 'POST', body: {} }))}>{busy ? 'Memeriksa…' : sale.qr ? 'Cek status' : 'Coba buat QR lagi'}</Button>}
@@ -271,17 +306,13 @@ function PaymentDialog({ session, draft, onCreated, close, notify }) {
 }
 
 export function EmployeeAttendance({ session, notify }) {
-  const { data, error, reload } = useResource('/attendance', 12000);
-  const [dialog, setDialog] = useState(null);
-  const [updated, setUpdated] = useState(null);
+  const attendance = useTodayAttendance(notify);
   const [now, setNow] = useState(() => new Date().toISOString());
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date().toISOString()), 1000);
     return () => clearInterval(interval);
   }, []);
-  const records = updated?.day === today() && updated.rows.length > (data?.rows.length || 0) ? updated.rows : data?.rows ?? [];
-  const arrival = records.find(row => row.kind === 'in');
-  const departure = records.find(row => row.kind === 'out');
+  const { ready, error, reload, records, arrival, departure, dialog, setDialog, complete } = attendance;
   return <>
     <SectionHeading title="Absensi saya" description="Catat waktu masuk dan pulang di lokasi kerja Anda." />
     <div className="attendance-layout">
@@ -290,14 +321,14 @@ export function EmployeeAttendance({ session, notify }) {
         <div className="clock-display"><strong>{timeLabel(now)}</strong><span>WIB</span></div>
         <div className="clock-location"><MapPin size={16} />{session.store.name} · {session.store.outlet}</div>
         <div className="attendance-buttons">
-          <Button icon={LogIn} kind="primary" disabled={!data || !!arrival || !session.store.venueConfigured} onClick={() => setDialog('in')}>Absen masuk</Button>
-          <Button icon={LogOut} disabled={!data || !arrival || !!departure || !session.store.venueConfigured} onClick={() => setDialog('out')}>Absen pulang</Button>
+          <Button icon={LogIn} kind="primary" disabled={!ready || !!arrival || !session.store.venueConfigured} onClick={() => setDialog('in')}>Absen masuk</Button>
+          <Button icon={LogOut} disabled={!ready || !arrival || !!departure || !session.store.venueConfigured} onClick={() => setDialog('out')}>Absen pulang</Button>
         </div>
         {!session.store.venueConfigured && <p className="field-note">Minta pemilik mengatur lokasi outlet sebelum absen.</p>}
       </Card>
       <Card className="panel attendance-history" index={1}>
         <header className="panel-header"><div><WordTitle>Catatan hari ini</WordTitle><p>Riwayat masuk dan pulang dari akun Anda</p></div></header>
-        {!data && !updated ? <ResourceState error={error} reload={reload} /> : !records.length
+        {!ready ? <ResourceState error={error} reload={reload} /> : !records.length
           ? <Empty icon={Clock3} title="Belum ada absensi">Mulai dengan absen masuk saat tiba di outlet.</Empty>
           : <div className="attendance-records">{records.map(record => {
             const [label, color] = locationStates[record.venueStatus];
@@ -309,12 +340,7 @@ export function EmployeeAttendance({ session, notify }) {
           })}</div>}
       </Card>
     </div>
-    {dialog && <CaptureAttendance kind={dialog} session={session} close={() => setDialog(null)} complete={result => {
-      setUpdated(result);
-      setDialog(null);
-      reload();
-      notify('Absensi berhasil dicatat.');
-    }} />}
+    {dialog && <CaptureAttendance kind={dialog} session={session} close={() => setDialog(null)} complete={complete} />}
   </>;
 }
 

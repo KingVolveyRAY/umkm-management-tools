@@ -189,14 +189,13 @@ export function commerceMigration(postgres) {
   `;
 }
 
-export function verifyMode(existing, demo) {
-  if (existing && existing.mode !== (demo ? 'demo' : 'live')) {
-    throw new Error('Gunakan basis data yang berbeda untuk mode demo dan operasional.');
+export function verifyMode(existing) {
+  if (existing && existing.mode !== 'live') {
+    throw new Error('Basis data demo tidak didukung. Gunakan basis data operasional.');
   }
 }
 
-export function initialRows({ demo, ownerUsername, ownerPassword }) {
-  if (demo) return demoRows();
+export function initialRows({ ownerUsername, ownerPassword } = {}) {
   if (!/^[a-z0-9._-]{3,40}$/i.test(ownerUsername ?? '') || (ownerPassword ?? '').length < 12 || ownerPassword.length > 128) {
     throw new Error('Inisialisasi operasional membutuhkan OWNER_USERNAME dan OWNER_PASSWORD (12–128 karakter).');
   }
@@ -219,7 +218,7 @@ export function openStore(path, options) {
     transaction(db, () => {
       db.exec(databaseSchema());
       const existing = db.prepare('SELECT mode FROM store WHERE id = 1').get();
-      verifyMode(existing, options.demo);
+      verifyMode(existing);
       if (!existing) {
         for (const [sql, args] of initialRows(options)) db.prepare(sql).run(...args);
       }
@@ -243,74 +242,6 @@ export function openStore(path, options) {
     db.close();
     throw error;
   }
-}
-
-const menu = [
-  ['Kopi Susu Gula Aren', 'Kopi', 28000],
-  ['Americano', 'Kopi', 22000],
-  ['Cappuccino', 'Kopi', 30000],
-  ['Oat Latte', 'Kopi', 36000],
-  ['Matcha Latte', 'Non-kopi', 32000],
-  ['Cokelat Dingin', 'Non-kopi', 29000],
-  ['Butter Croissant', 'Makanan', 26000],
-  ['Banana Bread', 'Makanan', 24000],
-  ['Es Teh Lemon', 'Non-kopi', 23000],
-  ['Kopi Manual Brew', 'Kopi', 34000],
-  ['Cookies Cokelat', 'Makanan', 19000],
-  ['Paket Seduh Kopi', 'Kopi', 85000],
-];
-
-function demoRows() {
-  const demoPassword = hashPassword(randomBytes(24).toString('hex'));
-  const names = ['Raka Pratama', 'Naya Putri', 'Dimas Saputra', 'Alya Rahman', 'Fajar Wirawan'];
-  const users = names.map((name, index) => [index + 1, name, name.split(' ')[0].toLowerCase(), demoPassword, index ? 'employee' : 'owner']);
-  const products = menu.map((product, index) => [index + 1, ...product]);
-
-  const sales = [];
-  const today = localDay();
-  const now = Date.now();
-  const counts = [16, 21, 19, 26, 22, 30, 27];
-  for (let offset = -29; offset <= 0; offset += 1) {
-    const day = shiftDay(today, offset);
-    const count = counts[(offset + 35) % 7] + (offset === 0 ? 14 : 0);
-    for (let index = 0; index < count; index += 1) {
-      const cashier = 3 + index % 3;
-      const first = (index + 30 + offset) % menu.length;
-      const second = (index * 3 + 2) % menu.length;
-      const items = [
-        { id: first + 1, name: menu[first][0], price: menu[first][2], quantity: 1 + index % 2 },
-        { id: second + 1, name: menu[second][0], price: menu[second][2], quantity: 1 },
-      ];
-      const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-      const clock = offset === 0
-        ? new Date(Math.max(Date.parse(day + 'T00:00:00+07:00'), now - (count - index) * 4 * 60000)).toISOString()
-        : new Date(Date.parse(day + 'T08:00:00+07:00') + index * 15 * 60000).toISOString();
-      const id = 'KL-' + day.slice(5).replace('-', '') + String(index + 1).padStart(3, '0');
-      sales.push([id, id, cashier, ['cash', 'qris_dynamic', 'qris_static'][index % 3], 'paid', 'demo',
-        JSON.stringify(items), amount, clock, clock, day]);
-    }
-  }
-
-  const attendance = [3, 4, 5].map((id, index) => {
-    const timestamp = new Date(Math.min(Date.parse(today + 'T07:45:00+07:00') + index * 6 * 60000, now - 1000)).toISOString();
-    return [id, 'in', today, timestamp, -6.2608, 106.81062, 14 + index * 3, 2, 'onsite'];
-  });
-  const [, , , , , , , qrisAmount, lastClock] = sales.at(-1);
-  const cashAmount = sales.at(-2)[7];
-  const notices = [
-    ['sale', 'Pembayaran QRIS diterima', 'Transaksi kasir • Rp' + qrisAmount.toLocaleString('id-ID'), lastClock],
-    ['attendance', 'Alya Rahman absen masuk', 'Di area outlet', new Date(now - 26 * 60000).toISOString()],
-    ['sale', 'Penjualan tunai tercatat', 'Transaksi kasir • Rp' + cashAmount.toLocaleString('id-ID'), new Date(now - 52 * 60000).toISOString()],
-    ['attendance', 'Dimas Saputra absen masuk', 'Di area outlet', new Date(now - 82 * 60000).toISOString()],
-  ];
-  return [
-    insertRows('store', 'id,name,outlet,latitude,longitude,radius,mode', [[1, 'Kopi Sudut', 'Jakarta Selatan', -6.2608, 106.8106, 150, 'demo']]),
-    insertRows('users', 'id,name,username,password_hash,role', users),
-    insertRows('products', 'id,name,category,price', products),
-    insertRows('sales', 'id,request_id,employee_id,method,status,provider,items,amount,created_at,paid_at,paid_day', sales),
-    insertRows('attendance', 'employee_id,kind,day,timestamp,latitude,longitude,accuracy,distance,venue_status', attendance),
-    insertRows('notices', 'kind,title,detail,created_at', notices),
-  ];
 }
 
 export function venueLocation(store, latitude, longitude, accuracy) {

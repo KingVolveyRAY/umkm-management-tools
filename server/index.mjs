@@ -4,7 +4,6 @@ import express from 'express';
 import { createRuntimeApp } from './runtime.mjs';
 
 const dev = process.argv.includes('--dev');
-const demo = process.env.DEMO_MODE !== '0';
 const app = await createRuntimeApp();
 const server = createServer(app);
 
@@ -29,5 +28,5 @@ if (dev) {
 
 const port = Number(process.env.PORT || 5173);
 server.listen(port, process.env.HOST || '0.0.0.0', () => {
-  console.log('Kelola berjalan pada port ' + server.address().port + (demo ? ' (demo)' : ''));
+  console.log('Kelola berjalan pada port ' + server.address().port);
 });

@@ -7,7 +7,7 @@ import '@fontsource-variable/manrope';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
-  ArrowLeftRight, ArrowRight, Bell, Box, Calculator, ChartNoAxesCombined, Check, ChevronDown, ChevronRight, ChevronsUpDown,
+  ArrowRight, Bell, Box, Calculator, ChartNoAxesCombined, Check, ChevronDown, ChevronRight, ChevronsUpDown,
   Coffee, LayoutDashboard, LogOut, Menu, Plus, Settings, ShoppingCart, Store, Tags, UserRound, Users, X,
   CalendarCheck,
 } from 'lucide-react';
@@ -76,57 +76,39 @@ function App() {
     let active = true;
     const load = async () => {
       try {
-        let current = await api('/session');
-        if (!active) return;
-        if (current.demo && !current.user && !sessionStorage.getItem('kelola:logged-out')) {
-          const role = ['kasir', 'absensi-saya'].includes(location.hash.slice(1)) ? 'employee' : 'owner';
-          current = await api('/demo', { method: 'POST', body: { role } });
-        }
+        const current = await api('/session');
         if (active) setSession(current);
       } catch (problem) {
         if (active) setError(problem.message);
       }
     };
     load();
-    const reset = () => {
-      sessionStorage.setItem('kelola:logged-out', '1');
-      setSession(previous => ({ user: null, demo: previous?.demo }));
-    };
+    const reset = () => setSession({ user: null });
     window.addEventListener('kelola:expired', reset);
     return () => { active = false; window.removeEventListener('kelola:expired', reset); };
   }, [revision]);
 
   async function login(fields) {
     const response = await api('/login', { method: 'POST', body: fields });
-    sessionStorage.removeItem('kelola:logged-out');
-    setSession(response);
-  }
-
-  async function demoAs(role) {
-    const response = await api('/demo', { method: 'POST', body: { role } });
-    sessionStorage.removeItem('kelola:logged-out');
-    const hash = role === 'owner' ? '#ringkasan' : '#kasir';
-    window.history.replaceState(null, '', hash);
     setSession(response);
   }
 
   async function logout() {
     await api('/logout', { method: 'POST', body: {} });
-    sessionStorage.setItem('kelola:logged-out', '1');
     window.history.replaceState(null, '', location.pathname + location.search);
-    setSession(previous => ({ user: null, demo: previous.demo }));
+    setSession({ user: null });
   }
 
   if (!session) return <div className="boot"><Brand />{error ? <ResourceState error={error} reload={() => { setError(''); setRevision(value => value + 1); }} /> : <Pending label="Membuka ruang kerja…" />}</div>;
   return <>
     {session.user
-      ? <Workspace key={session.user.id} session={session} updateSession={setSession} demoAs={demoAs} logout={logout} notify={notify} lenis={lenis} theme={theme} />
-      : <LoginPage demo={session.demo} login={login} demoAs={demoAs} theme={theme} />}
+      ? <Workspace key={session.user.id} session={session} updateSession={setSession} logout={logout} notify={notify} lenis={lenis} theme={theme} />
+      : <LoginPage login={login} theme={theme} />}
     <Toast toast={toast} />
   </>;
 }
 
-function Workspace({ session, updateSession, demoAs, logout, notify, lenis, theme }) {
+function Workspace({ session, updateSession, logout, notify, lenis, theme }) {
   const isOwner = session.user.role === 'owner';
   const menus = isOwner ? ownerMenus : staffMenus;
   const entries = menus.flatMap(group => group.entries);
@@ -146,7 +128,6 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis, them
   const current = entries.find(entry => entry.id === hash) ?? entries[0];
   const notices = useResource(isOwner ? '/owner/notices' : null, 8000, activeOutlet.id);
   const roleName = isOwner ? 'Pemilik' : 'Karyawan';
-  const switchName = isOwner ? 'Panel karyawan' : 'Panel pemilik';
 
   useEffect(() => {
     const update = () => setHash(location.hash.slice(1));
@@ -206,7 +187,6 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis, them
     setMobileOpen(false);
     setAddingOutlet(true);
   }
-  const switchRole = () => accountAction(() => demoAs(isOwner ? 'employee' : 'owner'));
 
   let content;
   switch (current.id) {
@@ -286,10 +266,6 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis, them
         </div>)}
       </nav>
       <div className="sidebar-bottom">
-        {session.demo && <div className="demo-block">
-          <span><i />Mode demo</span>
-          <button type="button" onClick={switchRole} disabled={switching}><ArrowLeftRight size={16} />{switchName}<ArrowRight size={15} /></button>
-        </div>}
         <div className="sidebar-role"><span className="role-dot" />Panel {roleName.toLowerCase()}</div>
       </div>
     </aside>
@@ -309,7 +285,6 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis, them
             </button>
             {profileOpen && <div className="profile-menu">
               <ThemeControl {...theme} />
-              {session.demo && <button type="button" disabled={switching} onClick={switchRole}><ArrowLeftRight size={16} />{switchName}</button>}
               <button type="button" disabled={switching} onClick={() => accountAction(logout)}><LogOut size={16} />Keluar</button>
             </div>}
           </div>
@@ -372,7 +347,7 @@ function NoticeDialog({ notices, onClose }) {
   </Dialog>;
 }
 
-function LoginPage({ demo, login, demoAs, theme }) {
+function LoginPage({ login, theme }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function enter(action) {
@@ -403,10 +378,6 @@ function LoginPage({ demo, login, demoAs, theme }) {
         <ErrorText text={error} />
         <Button type="submit" kind="primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk'} <ArrowRight size={17} /></Button>
       </form>
-      {demo && <div className="demo-login">
-        <Button disabled={busy} onClick={() => enter(() => demoAs('owner'))}>Demo pemilik</Button>
-        <Button disabled={busy} onClick={() => enter(() => demoAs('employee'))}>Demo karyawan</Button>
-      </div>}
     </section>
   </main>;
 }
