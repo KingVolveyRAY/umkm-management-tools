@@ -81,15 +81,16 @@ function SalesChart({ entries, days, setDays }) {
           }}>
           <svg viewBox={'0 0 ' + width + ' 184'} preserveAspectRatio="none" aria-hidden="true">
             <defs><linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#c9e2bf" stopOpacity=".8" /><stop offset="100%" stopColor="#e9f3e5" stopOpacity=".26" />
+              <stop offset="0%" stopColor="var(--chart-fill-top, #c9e2bf)" stopOpacity=".8" />
+              <stop offset="100%" stopColor="var(--chart-fill-bottom, #e9f3e5)" stopOpacity=".26" />
             </linearGradient></defs>
             {ticks.map(tick => {
               const y = floor - tick * (floor - ceiling);
-              return <line key={tick} x1="0" y1={y} x2={width} y2={y} stroke="#ebefe8" strokeDasharray={tick ? '4 4' : undefined} vectorEffect="non-scaling-stroke" />;
+              return <line key={tick} x1="0" y1={y} x2={width} y2={y} stroke="var(--chart-grid, #ebefe8)" strokeDasharray={tick ? '4 4' : undefined} vectorEffect="non-scaling-stroke" />;
             })}
             <path d={fill} fill={'url(#' + id + ')'} />
-            <path d={path} fill="none" stroke="#43814e" strokeWidth="2.7" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-            {active && <line x1={active.x} y1={ceiling} x2={active.x} y2={floor} stroke="#a6bd9b" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
+            <path d={path} fill="none" stroke="var(--chart-line, #43814e)" strokeWidth="2.7" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+            {active && <line x1={active.x} y1={ceiling} x2={active.x} y2={floor} stroke="var(--chart-cursor, #a6bd9b)" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
           </svg>
           {active && <>
             <span className="chart-point" style={{ left: active.x / width * 100 + '%', top: active.y / 184 * 100 + '%' }} />

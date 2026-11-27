@@ -17,7 +17,9 @@ import {
 import { AttendancePage, CatalogPage, OutletOverview, Overview, SalesPage, SettingsPage } from './owner.jsx';
 import { CustomersPage, ProfitPage, PromotionsPage } from './business.jsx';
 import { EmployeeAttendance, PointOfSale } from './employee.jsx';
+import { ThemeControl, useThemePreference } from './theme.jsx';
 import './style.css';
+import './theme.css';
 
 const ownerMenus = [
   { label: 'Ruang kerja', entries: [
@@ -68,6 +70,7 @@ function App() {
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const [toast, notify] = useToast();
+  const theme = useThemePreference();
   const lenis = useSmoothScroll();
   useEffect(() => {
     let active = true;
@@ -117,13 +120,13 @@ function App() {
   if (!session) return <div className="boot"><Brand />{error ? <ResourceState error={error} reload={() => { setError(''); setRevision(value => value + 1); }} /> : <Pending label="Membuka ruang kerja…" />}</div>;
   return <>
     {session.user
-      ? <Workspace key={session.user.id} session={session} updateSession={setSession} demoAs={demoAs} logout={logout} notify={notify} lenis={lenis} />
-      : <LoginPage demo={session.demo} login={login} demoAs={demoAs} />}
+      ? <Workspace key={session.user.id} session={session} updateSession={setSession} demoAs={demoAs} logout={logout} notify={notify} lenis={lenis} theme={theme} />
+      : <LoginPage demo={session.demo} login={login} demoAs={demoAs} theme={theme} />}
     <Toast toast={toast} />
   </>;
 }
 
-function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
+function Workspace({ session, updateSession, demoAs, logout, notify, lenis, theme }) {
   const isOwner = session.user.role === 'owner';
   const menus = isOwner ? ownerMenus : staffMenus;
   const entries = menus.flatMap(group => group.entries);
@@ -305,6 +308,7 @@ function Workspace({ session, updateSession, demoAs, logout, notify, lenis }) {
               <ChevronDown size={15} className="profile-chevron" />
             </button>
             {profileOpen && <div className="profile-menu">
+              <ThemeControl {...theme} />
               {session.demo && <button type="button" disabled={switching} onClick={switchRole}><ArrowLeftRight size={16} />{switchName}</button>}
               <button type="button" disabled={switching} onClick={() => accountAction(logout)}><LogOut size={16} />Keluar</button>
             </div>}
@@ -368,7 +372,7 @@ function NoticeDialog({ notices, onClose }) {
   </Dialog>;
 }
 
-function LoginPage({ demo, login, demoAs }) {
+function LoginPage({ demo, login, demoAs, theme }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function enter(action) {
@@ -386,6 +390,7 @@ function LoginPage({ demo, login, demoAs }) {
       <p>Penjualan, kasir, dan absensi dalam satu tempat.</p>
     </section>
     <section className="login-content">
+      <div className="login-theme"><ThemeControl {...theme} /></div>
       <h2>Masuk ke Kelola</h2>
       <p>Gunakan akun pemilik atau karyawan.</p>
       <form className="form" onSubmit={event => {
