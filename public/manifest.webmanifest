@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "Kelola — Ruang kerja UMKM",
+  "short_name": "Kelola",
+  "description": "Kelola penjualan, kasir, dan absensi untuk usaha Anda.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eee5d6",
+  "theme_color": "#eee5d6",
+  "lang": "id",
+  "icons": [
+    {
+      "src": "/kelola-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/kelola-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
