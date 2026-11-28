@@ -594,6 +594,7 @@ button.metric:hover, .product-card:hover { box-shadow: 0 12px 22px #60492d26, in
 #kelola-print-root { display: none; }
 
 .capture-area video, .capture-area img { position: absolute; inset: 0; object-fit: cover; }
+.capture-area video { transform: scaleX(-1); }
 .capture-area video[hidden] { display: none; }
 .capture-portrait { justify-self: center; width: min(100%, 270px, 39dvh); min-height: 0; max-height: none; aspect-ratio: 3 / 4; }
 .capture-portrait .face-guide { width: 66%; left: 17%; height: 75%; top: 12.5%; }
